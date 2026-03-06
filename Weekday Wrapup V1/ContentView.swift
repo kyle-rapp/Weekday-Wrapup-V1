@@ -94,8 +94,9 @@ struct ContentView: View {
                 .padding(.horizontal)
                 
                 // Scrollable Content
-                ScrollView {
-                    VStack(spacing: 32) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 32) {
                         // Camera section
                         SectionContainer {
                             VStack(alignment: .leading, spacing: 12) {
@@ -113,11 +114,20 @@ struct ContentView: View {
                                 SectionHeader(title: "Express Your Feelings", icon: "heart.fill", color: AppTheme.colors.moss)
                                 
                                 FeelingWheelView(selectedEmotions: $selectedEmotions)
-                                    .frame(height: 380)
+                                    .aspectRatio(1, contentMode: .fit)
+                                    .frame(maxWidth: 500)
+                                    .frame(minHeight: 520)
+                                    .padding(.vertical, 12)
                                 
                                 if !selectedEmotions.isEmpty {
                                     EmotionSummaryView(emotions: selectedEmotions)
+                                        .id("emotionSummary")
                                         .transition(.opacity)
+                                }
+                            }
+                            .onChange(of: selectedEmotions) {
+                                withAnimation {
+                                    proxy.scrollTo("emotionSummary", anchor: .center)
                                 }
                             }
                         }
@@ -141,6 +151,7 @@ struct ContentView: View {
                                     MonthlyGoalInputView(text: $monthlyGoal)
                                 }
                             }
+                        }
                         }
                     }
                 }

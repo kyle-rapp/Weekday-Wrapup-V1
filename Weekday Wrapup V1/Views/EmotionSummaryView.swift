@@ -44,7 +44,7 @@ struct EmotionSummaryView: View {
             Text("Selected Emotions:")
                 .font(.headline)
                 .foregroundColor(.secondary)
-            
+
             FlowLayout(spacing: 8) {
                 ForEach(Array(emotions).sorted(), id: \.self) { emotion in
                     Text(emotion)
@@ -59,6 +59,7 @@ struct EmotionSummaryView: View {
                 }
             }
         }
+        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: emotions)
     }
 }
 
