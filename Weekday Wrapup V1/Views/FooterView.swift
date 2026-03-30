@@ -4,7 +4,6 @@ import SwiftUI
 struct FooterView: View {
     let checkInData: CheckInData
     @State private var isShowingShareOptions = false
-    @ObservedObject var feed = FeedManager.shared
 
     var body: some View {
         HStack(spacing: 12) {
@@ -15,8 +14,8 @@ struct FooterView: View {
                 ShareOptionsView(isShowing: $isShowingShareOptions, checkInData: checkInData)
             }
 
-            NavigationLink(destination: FeedPageView(feed: feed)) {
-                Label("Feed", systemImage: "list.bullet")
+            NavigationLink(destination: FeedView()) {
+                Label("Feed", systemImage: "person.3.fill")
             }
         }
         .padding()
@@ -27,16 +26,17 @@ struct LikesView: View {
     @Binding var isShowing: Bool
 
     var body: some View {
-        NavigationView {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                Text("Likes")
+                    .font(.headline)
+                Spacer()
+                Button("Done") { isShowing = false }
+            }
+            .padding()
             List {
                 Text("Likes will appear here")
-            }
-            .navigationTitle("Likes")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { isShowing = false }
-                }
             }
         }
     }

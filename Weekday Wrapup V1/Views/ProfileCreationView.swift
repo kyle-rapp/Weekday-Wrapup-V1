@@ -27,7 +27,26 @@ struct ProfileCreationView: View {
     ]
     
     var body: some View {
-        NavigationView {
+        VStack(spacing: 0) {
+            HStack {
+                Button("Do Later") {
+                    isPresented = false
+                }
+                .foregroundColor(.secondary)
+                Spacer()
+                Text("Your profile")
+                    .font(.headline)
+                Spacer()
+                Button("Continue") {
+                    isPresented = false
+                }
+                .font(.body.bold())
+                .foregroundColor(userName.isEmpty ? .gray : .accentColor)
+                .disabled(userName.isEmpty)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
             ScrollView {
                 VStack(spacing: 32) {
                     // Profile Image Section
@@ -150,24 +169,6 @@ struct ProfileCreationView: View {
                 .padding(.bottom, 32)
             }
             .background(Color(.systemGroupedBackground))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Do Later") {
-                        isPresented = false
-                    }
-                    .foregroundColor(.secondary)
-                }
-                
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Continue") {
-                        isPresented = false
-                    }
-                    .font(.body.bold())
-                    .foregroundColor(userName.isEmpty ? .gray : .accentColor)
-                    .disabled(userName.isEmpty)
-                }
-            }
         }
         .sheet(isPresented: $showImagePicker) {
             ImagePicker(image: $inputImage)

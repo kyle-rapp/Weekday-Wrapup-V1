@@ -2,23 +2,30 @@ import SwiftUI
 import MessageUI
 import Social
 import UIKit
-import AVKit
 
 // Main Share Options View
 struct ShareOptionsView: View {
     @Binding var isShowing: Bool
     let checkInData: CheckInData
     @StateObject private var mailDelegate = MailDelegate()
-    @ObservedObject var feed = FeedManager.shared
+    @ObservedObject private var feedStore = FeedPostsStore.shared
 
-    private let appInviteText = """
-    🌟 Join me on Weekday Wrapup! 🌟
-    Download Weekday Wrapup: [App Store Link]
-    Let's share our journeys together! ✨
-    """
+    @State private var showMailComposer = false
+    @State private var mailPDFData: Data?
 
     var body: some View {
-        NavigationView {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                Text("Share")
+                    .font(.headline)
+                Spacer()
+                Button("Cancel") { isShowing = false }
+                    .font(.body)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
             List {
                 Section(header: Text("Share to")) {
                     ShareOptionRow(title: "Facebook", icon: "link.circle.fill", color: .blue) {
@@ -31,33 +38,39 @@ struct ShareOptionsView: View {
                         shareViaEmail()
                     }
                     ShareOptionRow(title: "Feed", icon: "list.bullet", color: .green) {
-                        feed.add(checkInData)
+                        feedStore.addFromCheckIn(checkInData)
                         isShowing = false
                     }
                 }
             }
-            .navigationTitle("Share")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Cancel") { isShowing = false }
-                }
+        }
+        .sheet(isPresented: $showMailComposer, onDismiss: {
+            mailPDFData = nil
+        }) {
+            if let pdfData = mailPDFData {
+                ComposeMailController(
+                    emailBody: "Here's my weekly wrap-up!",
+                    subject: "My Weekday Wrapup",
+                    pdfData: pdfData,
+                    delegate: mailDelegate
+                )
             }
         }
     }
-    
+
     // MARK: - Sharing Methods
-    
+
     private func shareViaEmail() {
-        guard MFMailComposeViewController.canSendMail() else { return }
-        guard let pdfData = PDFGenerator.generate(checkInData: checkInData) else { return }
-
-        let mailVC = MFMailComposeViewController()
-        mailVC.mailComposeDelegate = mailDelegate
-        mailVC.setSubject("My Weekly Wrapup")
-        mailVC.setMessageBody(appInviteText, isHTML: false)
-        mailVC.addAttachmentData(pdfData, mimeType: "application/pdf", fileName: "weekly-wrapup.pdf")
-
-        present(vc: mailVC)
+        guard MFMailComposeViewController.canSendMail() else {
+            print("Mail not configured")
+            return
+        }
+        guard let data = PDFGenerator.generate(checkInData: checkInData) else { return }
+        mailDelegate.onFinish = {
+            showMailComposer = false
+        }
+        mailPDFData = data
+        showMailComposer = true
     }
 
     private func shareToFacebook() {
@@ -83,7 +96,7 @@ struct ShareOptionsView: View {
         guard let root = topViewController() else { return }
         root.present(vc, animated: true)
     }
-    
+
     private func rootViewController() -> UIViewController? {
         UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
@@ -91,7 +104,7 @@ struct ShareOptionsView: View {
             .first { $0.isKeyWindow }?
             .rootViewController
     }
-    
+
     private func topViewController(from base: UIViewController? = nil) -> UIViewController? {
         let base = base ?? rootViewController()
         if let nav = base as? UINavigationController, let visible = nav.visibleViewController {
@@ -104,258 +117,16 @@ struct ShareOptionsView: View {
     }
 }
 
-// MARK: - Feed Manager Singleton
-class FeedManager: ObservableObject {
-    static let shared = FeedManager()
-    @Published var posts: [CheckInData] = FeedManager.dummyFeedPosts
-
-    func add(_ checkIn: CheckInData) {
-        posts.insert(checkIn, at: 0)
-    }
-
-    static let dummyFeedPosts: [CheckInData] = [
-        CheckInData(
-            userName: "Alice",
-            astrologySign: "♈︎ Aries",
-            weekNumber: 3,
-            weeklyEmoji: "😊",
-            checkInImage: UIImage(systemName: "person.fill"),
-            selectedEmotions: Set(["😊", "💪"]),
-            emotionalInsight: "I felt productive and happy.",
-            whoopsText: "Skipped gym once.",
-            poopsText: "Ate too much sugar.",
-            weeklyGoal: "Finish reading a book",
-            monthlyGoal: "Run 10 miles"
-        ),
-        CheckInData(
-            userName: "Bob",
-            astrologySign: "♉︎ Taurus",
-            weekNumber: 3,
-            weeklyEmoji: "😤",
-            checkInImage: UIImage(systemName: "person.fill"),
-            selectedEmotions: Set(["😤", "💭"]),
-            emotionalInsight: "Frustrated but reflective.",
-            whoopsText: "Missed a deadline.",
-            poopsText: "Over-caffeinated.",
-            weeklyGoal: "Organize workspace",
-            monthlyGoal: "Meditate 10x"
-        ),
-        CheckInData(
-            userName: "Clara",
-            astrologySign: "♊︎ Gemini",
-            weekNumber: 3,
-            weeklyEmoji: "🥰",
-            checkInImage: UIImage(systemName: "person.fill"),
-            selectedEmotions: Set(["🥰", "💫"]),
-            emotionalInsight: "Loved spending time with friends.",
-            whoopsText: "",
-            poopsText: "Late to meeting.",
-            weeklyGoal: "Write journal daily",
-            monthlyGoal: "Learn a new recipe"
-        )
-    ]
-}
-
-// MARK: - Feed Page
-struct FeedPageView: View {
-    @ObservedObject var feed: FeedManager
-
-    var body: some View {
-        NavigationView {
-            List {
-                ForEach(feed.posts, id: \.id) { post in
-                    NavigationLink(destination: FeedDetailView(checkIn: post)) {
-                        FeedCardView(checkIn: post)
-                    }
-                }
-            }
-            .navigationTitle("Feed")
-            .navigationBarBackButtonHidden(false)
-        }
-    }
-}
-
-// MARK: - Feed Card View
-struct FeedCardView: View {
-    @State private var isLiked = false
-    @State private var isFollowed = false
-    @State private var commentText = ""
-    @State private var comments: [String] = []
-
-    let checkIn: CheckInData
-
-    private var likeCount: Int { isLiked ? 1 : 0 }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                (checkIn.profileImage ?? Image(systemName: "person.circle.fill"))
-                    .resizable()
-                    .frame(width: 40, height: 40)
-                    .clipShape(Circle())
-                VStack(alignment: .leading) {
-                    Text(checkIn.userName)
-                        .font(.headline)
-                    Text("\(checkIn.astrologySign) • Week \(checkIn.weekNumber) \(checkIn.weeklyEmoji)")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-                Button(action: { isFollowed.toggle() }) {
-                    Text(isFollowed ? "Following" : "Follow")
-                        .font(.caption)
-                        .foregroundColor(isFollowed ? .green : .accentColor)
-                }
-            }
-
-            if let image = checkIn.checkInImage {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxHeight: 200)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            } else if let videoURL = checkIn.checkInVideoURL {
-                VideoPlayer(player: AVPlayer(url: videoURL))
-                    .frame(height: 200)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            } else if let drawing = checkIn.drawingImage {
-                Image(uiImage: drawing)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxHeight: 200)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
-
-            if !checkIn.emotionalInsight.isEmpty {
-                Text(checkIn.emotionalInsight)
-                    .font(.body)
-                    .lineLimit(2)
-            }
-
-            if !checkIn.selectedEmotions.isEmpty {
-                Text("Emotions: \(Array(checkIn.selectedEmotions).sorted().joined(separator: ", "))")
-                    .font(.subheadline)
-            }
-            if !checkIn.weeklyGoal.isEmpty {
-                Text("Weekly Goal: \(checkIn.weeklyGoal)")
-                    .font(.subheadline)
-            }
-
-            HStack {
-                Button(action: { isLiked.toggle() }) {
-                    Label("\(likeCount) Like\(likeCount == 1 ? "" : "s")", systemImage: isLiked ? "heart.fill" : "heart")
-                }
-                Button(action: { comments.append("Nice post!") }) {
-                    Label("\(comments.count) Comment\(comments.count == 1 ? "" : "s")", systemImage: "bubble.right")
-                }
-                Spacer()
-            }
-            .font(.caption)
-            .foregroundColor(.secondary)
-
-            HStack {
-                TextField("Add a comment...", text: $commentText)
-                    .textFieldStyle(.roundedBorder)
-                Button("Post") {
-                    if !commentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        comments.append(commentText)
-                        commentText = ""
-                    }
-                }
-            }
-        }
-        .padding()
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color(.systemBackground))
-                .shadow(radius: 2)
-        )
-    }
-}
-
-// MARK: - Feed Detail View
-struct FeedDetailView: View {
-    let checkIn: CheckInData
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    if let img = checkIn.checkInImage {
-                        Image(uiImage: img)
-                            .resizable()
-                            .frame(width: 50, height: 50)
-                            .clipShape(Circle())
-                    } else {
-                        Image(systemName: "person.circle.fill")
-                            .resizable()
-                            .frame(width: 50, height: 50)
-                            .foregroundColor(.secondary)
-                    }
-                    VStack(alignment: .leading) {
-                        Text(checkIn.userName)
-                            .font(.title2)
-                            .bold()
-                        Text("\(checkIn.astrologySign) • Week \(checkIn.weekNumber) \(checkIn.weeklyEmoji)")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                if checkIn.checkInImage != nil {
-                    Image(uiImage: checkIn.checkInImage!)
-                        .resizable()
-                        .scaledToFit()
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
-                } else if let videoURL = checkIn.checkInVideoURL {
-                    VideoPlayer(player: AVPlayer(url: videoURL))
-                        .frame(height: 300)
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
-                } else if let drawing = checkIn.drawingImage {
-                    Image(uiImage: drawing)
-                        .resizable()
-                        .scaledToFit()
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
-                }
-
-                if !checkIn.selectedEmotions.isEmpty {
-                    Text("Emotions: \(Array(checkIn.selectedEmotions).sorted().joined(separator: ", "))")
-                        .font(.body)
-                }
-                if !checkIn.emotionalInsight.isEmpty {
-                    Text("Insight: \(checkIn.emotionalInsight)")
-                        .font(.body)
-                }
-                if !checkIn.whoopsText.isEmpty {
-                    Text("Whoops: \(checkIn.whoopsText)")
-                        .font(.body)
-                }
-                if !checkIn.poopsText.isEmpty {
-                    Text("Poops: \(checkIn.poopsText)")
-                        .font(.body)
-                }
-                if !checkIn.weeklyGoal.isEmpty {
-                    Text("Weekly Goal: \(checkIn.weeklyGoal)")
-                        .font(.body)
-                }
-                if !checkIn.monthlyGoal.isEmpty {
-                    Text("Monthly Goal: \(checkIn.monthlyGoal)")
-                        .font(.body)
-                }
-            }
-            .padding()
-        }
-        .navigationTitle("Wrapup Details")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
 // Helper Views and Classes
 class MailDelegate: NSObject, ObservableObject, MFMailComposeViewControllerDelegate {
+    var onFinish: (() -> Void)?
+
     func mailComposeController(_ controller: MFMailComposeViewController,
-                             didFinishWith result: MFMailComposeResult,
-                             error: Error?) {
+                               didFinishWith result: MFMailComposeResult,
+                               error: Error?) {
         controller.dismiss(animated: true)
+        onFinish?()
+        onFinish = nil
     }
 }
 
@@ -364,8 +135,7 @@ struct ComposeMailController: UIViewControllerRepresentable {
     let subject: String
     let pdfData: Data
     let delegate: MailDelegate
-    let completion: () -> Void
-    
+
     func makeUIViewController(context: Context) -> MFMailComposeViewController {
         let composer = MFMailComposeViewController()
         composer.mailComposeDelegate = delegate
@@ -374,7 +144,7 @@ struct ComposeMailController: UIViewControllerRepresentable {
         composer.addAttachmentData(pdfData, mimeType: "application/pdf", fileName: "weekly-wrapup.pdf")
         return composer
     }
-    
+
     func updateUIViewController(_ uiViewController: MFMailComposeViewController, context: Context) {}
 }
 
@@ -383,7 +153,7 @@ struct ShareOptionRow: View {
     let icon: String
     let color: Color
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             HStack {
@@ -395,4 +165,3 @@ struct ShareOptionRow: View {
         }
     }
 }
- 

@@ -16,11 +16,13 @@ struct CheckInData: Identifiable {
     let weeklyGoal: String
     let monthlyGoal: String
     let profileImage: Image?
+    let visibility: PostVisibility
 
     init(userName: String, astrologySign: String, weekNumber: Int, weeklyEmoji: String,
          checkInImage: UIImage?, selectedEmotions: Set<String>, emotionalInsight: String,
          whoopsText: String, poopsText: String, weeklyGoal: String, monthlyGoal: String,
-         profileImage: Image? = nil, checkInVideoURL: URL? = nil, drawingImage: UIImage? = nil, id: String? = nil) {
+         profileImage: Image? = nil, checkInVideoURL: URL? = nil, drawingImage: UIImage? = nil,
+         visibility: PostVisibility = .public, id: String? = nil) {
         self.id = id ?? UUID().uuidString
         self.userName = userName
         self.astrologySign = astrologySign
@@ -36,6 +38,7 @@ struct CheckInData: Identifiable {
         self.weeklyGoal = weeklyGoal
         self.monthlyGoal = monthlyGoal
         self.profileImage = profileImage
+        self.visibility = visibility
     }
     
     var shareText: String {
@@ -53,6 +56,8 @@ struct CheckInData: Identifiable {
         
         Weekly Goal: \(weeklyGoal)
         Monthly Goal: \(monthlyGoal)
+        
+        Visibility: \(visibility.rawValue)
         """
     }
 } 

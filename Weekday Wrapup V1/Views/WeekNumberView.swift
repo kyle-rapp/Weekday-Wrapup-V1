@@ -59,7 +59,17 @@ struct EmojiPickerView: View {
     ]
     
     var body: some View {
-        NavigationView {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                Text("Select Emoji")
+                    .font(.headline)
+                Spacer()
+                Button("Done") { dismiss() }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     ForEach(emojiCategories, id: \.0) { category, emojis in
@@ -108,13 +118,6 @@ struct EmojiPickerView: View {
                 .padding(.vertical)
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Select Emoji")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
         }
     }
 }

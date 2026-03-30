@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var weeklyGoal = ""
     @State private var monthlyGoal = ""
     @State private var capturedImage: UIImage?
+    @State private var visibility: PostVisibility = .public
 
     private let emotionDefinitions: [String: String] = [
         "😊": "Feeling happy and content.",
@@ -50,12 +51,13 @@ struct ContentView: View {
             poopsText: poopsText,
             weeklyGoal: weeklyGoal,
             monthlyGoal: monthlyGoal,
-            profileImage: profileImage
+            profileImage: profileImage,
+            visibility: visibility
         )
     }
-    
+
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 0) {
                 // Fixed Header
                 HStack(spacing: 12) {
@@ -169,13 +171,25 @@ struct ContentView: View {
                                     WeeklyGoalInputView(text: $weeklyGoal)
                                     MonthlyGoalInputView(text: $monthlyGoal)
                                 }
+
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Label("Who can see this wrapup?", systemImage: "lock.fill")
+                                        .font(.subheadline)
+                                        .foregroundColor(AppTheme.colors.textPrimary)
+                                    Picker("Visibility", selection: $visibility) {
+                                        ForEach(PostVisibility.allCases, id: \.self) { option in
+                                            Text(option.rawValue).tag(option)
+                                        }
+                                    }
+                                    .pickerStyle(.segmented)
+                                }
                             }
                         }
                         }
                     }
                 }
                 .background(AppTheme.colors.secondaryBackground)
-                
+
                 // Footer
                 FooterView(checkInData: checkInData)
             }
