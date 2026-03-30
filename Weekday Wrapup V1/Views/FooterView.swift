@@ -1,64 +1,31 @@
 import SwiftUI
 
+// MARK: - Footer Update for Share
 struct FooterView: View {
-    @State private var showingLikesSheet = false
-    @State private var isLiked = false
     let checkInData: CheckInData
-    
+    @State private var isShowingShareOptions = false
+    @ObservedObject var feed = FeedManager.shared
+
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 32) {
-                // Like Button
-                Button {
-                    isLiked.toggle()
-                    if isLiked {
-                        showingLikesSheet = true
-                    }
-                } label: {
-                    VStack {
-                        Image(systemName: isLiked ? "heart.fill" : "heart")
-                            .resizable()
-                            .frame(width: 24, height: 22)
-                            .foregroundColor(isLiked ? .red : .black)
-                        
-                        Text("Like")
-                            .font(.caption)
-                            .foregroundColor(.black)
-                    }
-                    .padding(.vertical, 8)
-                }
-                
-                // Share Button
-                Button {
-                    // Share action
-                } label: {
-                    VStack {
-                        Image(systemName: "square.and.arrow.up.circle.fill")
-                            .resizable()
-                            .frame(width: 28, height: 28)
-                            .foregroundColor(.purple)
-                        
-                        Text("Share")
-                            .font(.caption)
-                            .foregroundColor(.black)
-                    }
-                    .padding(.vertical, 8)
-                }
+        HStack(spacing: 12) {
+            Button(action: { isShowingShareOptions = true }) {
+                Label("Share", systemImage: "square.and.arrow.up")
             }
-            
-            Divider()
-                .foregroundColor(.gray.opacity(0.3))
+            .sheet(isPresented: $isShowingShareOptions) {
+                ShareOptionsView(isShowing: $isShowingShareOptions, checkInData: checkInData)
+            }
+
+            NavigationLink(destination: FeedPageView(feed: feed)) {
+                Label("Feed", systemImage: "list.bullet")
+            }
         }
-        .background(Color.white)
-        .sheet(isPresented: $showingLikesSheet) {
-            LikesView(isShowing: $showingLikesSheet)
-        }
+        .padding()
     }
 }
 
 struct LikesView: View {
     @Binding var isShowing: Bool
-    
+
     var body: some View {
         NavigationView {
             List {
@@ -73,4 +40,4 @@ struct LikesView: View {
             }
         }
     }
-} 
+}

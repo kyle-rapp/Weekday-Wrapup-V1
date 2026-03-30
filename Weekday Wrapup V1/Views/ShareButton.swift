@@ -23,8 +23,20 @@ struct ShareButton: View {
             .cornerRadius(12)
         }
         .sheet(isPresented: $showingShareSheet) {
-            ShareSheet(items: [checkInData.shareText, checkInData.checkInImage].compactMap { $0 })
+            ShareSheet(items: shareItems)
         }
+    }
+
+    private var shareItems: [Any] {
+        var items: [Any] = [checkInData.shareText]
+        if let image = checkInData.checkInImage {
+            items.append(image)
+        }
+        if let pdfData = PDFGenerator.generate(checkInData: checkInData),
+           let pdfURL = PDFGenerator.writeToTemporaryFile(data: pdfData) {
+            items.append(pdfURL)
+        }
+        return items
     }
 }
 

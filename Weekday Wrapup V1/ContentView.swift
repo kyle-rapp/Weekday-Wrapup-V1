@@ -21,7 +21,16 @@ struct ContentView: View {
     @State private var weeklyGoal = ""
     @State private var monthlyGoal = ""
     @State private var capturedImage: UIImage?
-    
+
+    private let emotionDefinitions: [String: String] = [
+        "😊": "Feeling happy and content.",
+        "😤": "Feeling frustrated or stressed.",
+        "🥰": "Feeling loved or affectionate.",
+        "💪": "Feeling strong or motivated.",
+        "💭": "Feeling thoughtful or reflective.",
+        "💫": "Feeling inspired or magical."
+    ]
+
     // Get current week number
     private var weekNumber: Int {
         let calendar = Calendar.current
@@ -40,7 +49,8 @@ struct ContentView: View {
             whoopsText: whoopsText,
             poopsText: poopsText,
             weeklyGoal: weeklyGoal,
-            monthlyGoal: monthlyGoal
+            monthlyGoal: monthlyGoal,
+            profileImage: profileImage
         )
     }
     
@@ -112,13 +122,22 @@ struct ContentView: View {
                         SectionContainer {
                             VStack(spacing: 20) {
                                 SectionHeader(title: "Express Your Feelings", icon: "heart.fill", color: AppTheme.colors.moss)
-                                
+
                                 FeelingWheelView(selectedEmotions: $selectedEmotions)
                                     .aspectRatio(1, contentMode: .fit)
                                     .frame(maxWidth: 500)
                                     .frame(minHeight: 520)
                                     .padding(.vertical, 12)
-                                
+
+                                if let firstEmotion = selectedEmotions.min(), let definition = emotionDefinitions[firstEmotion] {
+                                    Text(definition)
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                        .padding(.horizontal)
+                                        .transition(.opacity)
+                                        .animation(.easeInOut(duration: 0.2), value: selectedEmotions)
+                                }
+
                                 if !selectedEmotions.isEmpty {
                                     EmotionSummaryView(emotions: selectedEmotions)
                                         .id("emotionSummary")

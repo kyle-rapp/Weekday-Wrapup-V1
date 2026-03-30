@@ -178,13 +178,6 @@ private struct EmotionWheelCanvas: View {
 
     var body: some View {
         ZStack {
-            // Center instruction text (above wedges so it’s visible)
-            Text(selectedPrimaryIndex == nil ? "Tap a feeling" : "Choose a specific feeling")
-                .font(.system(size: wheelRadius * 0.06, weight: .medium))
-                .foregroundColor(.secondary)
-                .position(layout.center)
-                .allowsHitTesting(false)
-                .zIndex(-1)
             // Layer 1: Primary (inner) ring – 6 wedges from center to innerRadius
             primaryRing
                 .zIndex(0)
