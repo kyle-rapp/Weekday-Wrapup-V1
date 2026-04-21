@@ -6,6 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		8D3C5A512F7A372D00B0687C /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = FBA09E001224DD00001A0002 /* FirebaseAuth */; };
+		8D3C5A522F7A372D00B0687C /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = FBA09E001224DD00001A0003 /* FirebaseFirestore */; };
+		8D3C5ACD2F7A37F700B0687C /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = FBA09E001224DD00001A0004 /* FirebaseCore */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		99D876952D0E80D6001224DD /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +58,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8D3C5ACD2F7A37F700B0687C /* FirebaseCore in Frameworks */,
+				8D3C5A522F7A372D00B0687C /* FirebaseFirestore in Frameworks */,
+				8D3C5A512F7A372D00B0687C /* FirebaseAuth in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +121,9 @@
 			);
 			name = "Weekday Wrapup V1";
 			packageProductDependencies = (
+				FBA09E001224DD00001A0002 /* FirebaseAuth */,
+				FBA09E001224DD00001A0003 /* FirebaseFirestore */,
+				FBA09E001224DD00001A0004 /* FirebaseCore */,
 			);
 			productName = "Weekday Wrapup V1";
 			productReference = 99D876842D0E80D1001224DD /* Weekday Wrapup V1.app */;
@@ -197,6 +209,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				99D876CA2D0F66AF001224DD /* XCRemoteSwiftPackageReference "swift-collections" */,
+				FBA09E001224DD00001A0001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 99D876852D0E80D1001224DD /* Products */;
@@ -394,7 +407,6 @@
 		99D876A92D0E80D6001224DD /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -402,6 +414,8 @@
 				DEVELOPMENT_TEAM = 275B2S664Q;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Weekly Wrapup";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -423,7 +437,6 @@
 		99D876AA2D0E80D6001224DD /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -431,6 +444,8 @@
 				DEVELOPMENT_TEAM = 275B2S664Q;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Weekly Wrapup";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -571,7 +586,33 @@
 				minimumVersion = 1.1.4;
 			};
 		};
+		FBA09E001224DD00001A0001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 11.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		FBA09E001224DD00001A0002 /* FirebaseAuth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FBA09E001224DD00001A0001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAuth;
+		};
+		FBA09E001224DD00001A0003 /* FirebaseFirestore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FBA09E001224DD00001A0001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseFirestore;
+		};
+		FBA09E001224DD00001A0004 /* FirebaseCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FBA09E001224DD00001A0001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 99D8767C2D0E80D1001224DD /* Project object */;
 }

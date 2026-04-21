@@ -191,23 +191,22 @@ struct ScaleButtonStyle: ButtonStyle {
     }
 }
 
-// Preview
-struct ProfileCreationView_Previews: PreviewProvider {
-    static var previews: some View {
-        ProfileCreationView(
-            isPresented: .constant(true),
-            userName: .constant(""),
-            profileImage: .constant(nil),
-            astrologySign: .constant("")
-        )
-        
-        // Dark mode preview
-        ProfileCreationView(
-            isPresented: .constant(true),
-            userName: .constant("John Doe"),
-            profileImage: .constant(nil),
-            astrologySign: .constant("♈️ Aries")
-        )
-        .preferredColorScheme(.dark)
-    }
-} 
+#Preview("Empty") {
+    ProfileCreationView(
+        isPresented: .constant(true),
+        userName: .constant(""),
+        profileImage: .constant(nil),
+        astrologySign: .constant("")
+    )
+}
+
+#Preview("Filled (dark)") {
+    ProfileCreationView(
+        isPresented: .constant(true),
+        userName: .constant("John Doe"),
+        profileImage: .constant(nil),
+        astrologySign: .constant("♈️ Aries")
+    )
+    .preferredColorScheme(.dark)
+}
+ 

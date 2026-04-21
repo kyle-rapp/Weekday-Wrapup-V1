@@ -252,28 +252,21 @@ struct BlinkingCursor: View {
     }
 }
 
-// Preview
-struct InputViews_Previews: PreviewProvider {
-    static var previews: some View {
-        Group {
-            // Light mode
-            VStack(spacing: 20) {
-                InsightInputView(text: .constant(""))
-                WhoopsInputView(text: .constant(""))
-                WeeklyGoalInputView(text: .constant(""))
-            }
-            .padding()
-            .previewDisplayName("Light Mode")
-            
-            // Dark mode
-            VStack(spacing: 20) {
-                InsightInputView(text: .constant("Sample text"))
-                WhoopsInputView(text: .constant(""))
-                WeeklyGoalInputView(text: .constant(""))
-            }
-            .padding()
-            .preferredColorScheme(.dark)
-            .previewDisplayName("Dark Mode")
-        }
+#Preview("Light") {
+    VStack(spacing: 20) {
+        InsightInputView(text: .constant(""))
+        WhoopsInputView(text: .constant(""))
+        WeeklyGoalInputView(text: .constant(""))
     }
-} 
+    .padding()
+}
+
+#Preview("Dark") {
+    VStack(spacing: 20) {
+        InsightInputView(text: .constant("Sample emotional insight for the week."))
+        WhoopsInputView(text: .constant(""))
+        WeeklyGoalInputView(text: .constant(""))
+    }
+    .padding()
+    .preferredColorScheme(.dark)
+}

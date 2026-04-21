@@ -26,12 +26,12 @@ struct AppTheme {
         let warning = Color("WarningColor") // Warm ochre: rgb(191, 162, 119)
         let error = Color("ErrorColor") // Muted rust: rgb(171, 106, 104)
         
-        // Background colors
-        let background = Color("BackgroundColor") // Cream: rgb(249, 246, 241)
-        let secondaryBackground = Color("SecondaryBackgroundColor") // Soft beige: rgb(243, 239, 234)
-        
-        // Text colors
-        let textPrimary = Color("TextPrimaryColor") // Deep brown: rgb(59, 48, 43)
-        let textSecondary = Color("TextSecondaryColor") // Warm gray: rgb(108, 98, 95)
+        // Background colors — semantic so Light/Dark always contrast with text
+        let background = Color(.systemBackground)
+        let secondaryBackground = Color(.systemGroupedBackground)
+
+        // Text colors — semantic; avoids asset/catalog mismatches that hid Learn tab copy
+        let textPrimary = Color.primary
+        let textSecondary = Color.secondary
     }
 } 

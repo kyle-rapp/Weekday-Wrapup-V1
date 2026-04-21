@@ -133,7 +133,7 @@ class CameraModel: NSObject, ObservableObject {
     @Published var session = AVCaptureSession()
     @Published var alert = false
     @Published var output = AVCapturePhotoOutput()
-    @Published var preview: AVCaptureVideoPreviewLayer!
+    @Published var preview: AVCaptureVideoPreviewLayer?
     @Published var photo: UIImage?
     
     override init() {
@@ -239,10 +239,11 @@ struct CameraPreview: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = UIView(frame: UIScreen.main.bounds)
         
-        camera.preview = AVCaptureVideoPreviewLayer(session: camera.session)
-        camera.preview.frame = view.frame
-        camera.preview.videoGravity = .resizeAspectFill
-        view.layer.addSublayer(camera.preview)
+        let layer = AVCaptureVideoPreviewLayer(session: camera.session)
+        layer.frame = view.bounds
+        layer.videoGravity = .resizeAspectFill
+        camera.preview = layer
+        view.layer.addSublayer(layer)
         
         return view
     }

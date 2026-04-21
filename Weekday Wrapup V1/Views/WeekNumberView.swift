@@ -122,13 +122,11 @@ struct EmojiPickerView: View {
     }
 }
 
-// Preview
-struct WeekNumberView_Previews: PreviewProvider {
-    static var previews: some View {
-        VStack {
-            WeekNumberView(weekNumber: 1, emoji: .constant("😊"))
-        }
-        .padding()
-        .previewLayout(.sizeThatFits)
+#Preview {
+    VStack {
+        WeekNumberView(weekNumber: 12, emoji: .constant("😊"))
     }
-} 
+    .padding()
+    .previewLayout(.sizeThatFits)
+}
+ 

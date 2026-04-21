@@ -4,6 +4,9 @@ import SwiftUI
 struct FooterView: View {
     let checkInData: CheckInData
     @State private var isShowingShareOptions = false
+    @EnvironmentObject private var auth: AuthManager
+    @EnvironmentObject private var firestore: FirestoreManager
+    @EnvironmentObject private var tabRouter: TabRouter
 
     var body: some View {
         HStack(spacing: 12) {
@@ -12,10 +15,9 @@ struct FooterView: View {
             }
             .sheet(isPresented: $isShowingShareOptions) {
                 ShareOptionsView(isShowing: $isShowingShareOptions, checkInData: checkInData)
-            }
-
-            NavigationLink(destination: FeedView()) {
-                Label("Feed", systemImage: "person.3.fill")
+                    .environmentObject(auth)
+                    .environmentObject(firestore)
+                    .environmentObject(tabRouter)
             }
         }
         .padding()

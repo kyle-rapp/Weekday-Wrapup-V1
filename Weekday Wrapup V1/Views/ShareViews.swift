@@ -1,17 +1,45 @@
 import SwiftUI
 import MessageUI
-import Social
 import UIKit
+import FirebaseAuth
 
 // Main Share Options View
 struct ShareOptionsView: View {
     @Binding var isShowing: Bool
     let checkInData: CheckInData
     @StateObject private var mailDelegate = MailDelegate()
-    @ObservedObject private var feedStore = FeedPostsStore.shared
+    @EnvironmentObject private var auth: AuthManager
+    @EnvironmentObject private var firestore: FirestoreManager
+    @EnvironmentObject private var tabRouter: TabRouter
 
     @State private var showMailComposer = false
     @State private var mailPDFData: Data?
+    @State private var feedError: String?
+    @State private var isPostingToFeed = false
+    @State private var showFeedAlert = false
+    @State private var feedAlertText = ""
+
+    private var canSubmitFeedPost: Bool {
+        let insight = checkInData.emotionalInsight.trimmingCharacters(in: .whitespacesAndNewlines)
+        let emoji = checkInData.weeklyEmoji.trimmingCharacters(in: .whitespacesAndNewlines)
+        let whoops = checkInData.whoopsText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let weekly = checkInData.weeklyGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let monthly = checkInData.monthlyGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !emoji.isEmpty || !insight.isEmpty || !whoops.isEmpty || !weekly.isEmpty || !monthly.isEmpty
+    }
+
+    private var hasNonEmptyProfileName: Bool {
+        guard let raw = auth.currentUser?.name else { return false }
+        return !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var feedActionEnabled: Bool {
+        Auth.auth().currentUser != nil
+            && auth.currentUser != nil
+            && hasNonEmptyProfileName
+            && canSubmitFeedPost
+            && !isPostingToFeed
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,11 +66,25 @@ struct ShareOptionsView: View {
                         shareViaEmail()
                     }
                     ShareOptionRow(title: "Feed", icon: "list.bullet", color: .green) {
-                        feedStore.addFromCheckIn(checkInData)
-                        isShowing = false
+                        postToFeed()
                     }
+                    .disabled(!feedActionEnabled)
                 }
             }
+            if let feedError, !feedError.isEmpty {
+                Text(feedError)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+            }
+        }
+        .alert("Feed", isPresented: $showFeedAlert) {
+            Button("OK", role: .cancel) {
+                showFeedAlert = false
+            }
+        } message: {
+            Text(feedAlertText)
         }
         .sheet(isPresented: $showMailComposer, onDismiss: {
             mailPDFData = nil
@@ -54,6 +96,73 @@ struct ShareOptionsView: View {
                     pdfData: pdfData,
                     delegate: mailDelegate
                 )
+            }
+        }
+    }
+
+    private func postToFeed() {
+        feedError = nil
+        firestore.clearErrorMessage()
+
+        guard let firebaseUser = Auth.auth().currentUser else {
+            print("❌ No authenticated user")
+            feedError = "You must be signed in to post."
+            feedAlertText = feedError ?? ""
+            showFeedAlert = true
+            return
+        }
+
+        guard let uid = auth.currentUser?.id,
+              let name = auth.currentUser?.name,
+              uid == firebaseUser.uid else {
+            print("❌ Auth profile missing or mismatch")
+            feedError = "You must be signed in to post."
+            feedAlertText = feedError ?? ""
+            showFeedAlert = true
+            return
+        }
+
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            print("❌ Empty profile name")
+            feedError = "Add your name in profile before posting to the feed."
+            feedAlertText = feedError ?? ""
+            showFeedAlert = true
+            return
+        }
+
+        guard canSubmitFeedPost else {
+            feedError = "Add an emoji, insight, whoops, or a goal before posting."
+            feedAlertText = feedError ?? ""
+            showFeedAlert = true
+            return
+        }
+
+        Task { @MainActor in
+            isPostingToFeed = true
+            defer { isPostingToFeed = false }
+
+            let allowed = await firestore.canCreatePost(userId: uid)
+            guard allowed else {
+                let msg = "You've reached your 3 posts for today 🌿"
+                print("🚫", msg)
+                feedError = msg
+                feedAlertText = msg
+                showFeedAlert = true
+                return
+            }
+
+            let ok = await firestore.createPost(from: checkInData, authorId: uid, authorName: trimmedName)
+            if ok {
+                isShowing = false
+                feedError = nil
+                tabRouter.completePostToFeedFlow()
+            } else {
+                let msg = firestore.errorMessage ?? "Could not post to the feed."
+                print("❌ Firestore error:", msg)
+                feedError = msg
+                feedAlertText = msg
+                showFeedAlert = true
             }
         }
     }

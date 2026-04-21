@@ -8,13 +8,15 @@
 import SwiftUI
 
 struct ContentView: View {
+    @EnvironmentObject private var auth: AuthManager
+    @EnvironmentObject private var emotionRouter: EmotionRouter
+
     // State variables
     @State private var showProfileCreation = true
     @State private var userName = ""
     @State private var profileImage: Image?
     @State private var astrologySign = ""
     @State private var weeklyEmoji = ""
-    @State private var selectedEmotions: Set<String> = []
     @State private var emotionalInsight = ""
     @State private var whoopsText = ""
     @State private var poopsText = ""
@@ -45,7 +47,7 @@ struct ContentView: View {
             weekNumber: weekNumber,
             weeklyEmoji: weeklyEmoji,
             checkInImage: capturedImage,
-            selectedEmotions: selectedEmotions,
+            selectedEmotions: emotionRouter.selectedEmotions,
             emotionalInsight: emotionalInsight,
             whoopsText: whoopsText,
             poopsText: poopsText,
@@ -57,8 +59,7 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
+        VStack(spacing: 0) {
                 // Fixed Header
                 HStack(spacing: 12) {
                     ProfileImageView(image: profileImage)
@@ -93,7 +94,19 @@ struct ContentView: View {
                     }
                     
                     Spacer()
-                    
+
+                    Menu {
+                        Button("Sign out", role: .destructive) {
+                            Task {
+                                await auth.signOut()
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.title3)
+                            .foregroundStyle(AppTheme.colors.textPrimary.opacity(0.88))
+                    }
+
                     WeekNumberView(weekNumber: weekNumber, emoji: $weeklyEmoji)
                 }
                 .padding(.horizontal)
@@ -125,28 +138,36 @@ struct ContentView: View {
                             VStack(spacing: 20) {
                                 SectionHeader(title: "Express Your Feelings", icon: "heart.fill", color: AppTheme.colors.moss)
 
-                                FeelingWheelView(selectedEmotions: $selectedEmotions)
+                                FeelingWheelView(
+                                    selectedEmotions: Binding(
+                                        get: { emotionRouter.selectedEmotions },
+                                        set: { emotionRouter.updateSelection($0) }
+                                    )
+                                )
                                     .aspectRatio(1, contentMode: .fit)
                                     .frame(maxWidth: 500)
                                     .frame(minHeight: 520)
                                     .padding(.vertical, 12)
 
-                                if let firstEmotion = selectedEmotions.min(), let definition = emotionDefinitions[firstEmotion] {
+                                if let key = emotionRouter.lastSelectedEmotion
+                                    ?? emotionRouter.selectedEmotions.first, !key.isEmpty {
+                                    let definition = emotionDefinitions[key]
+                                        ?? LearnEmotionDefinitionLookup.definition(for: key)
                                     Text(definition)
                                         .font(.subheadline)
                                         .foregroundColor(.secondary)
                                         .padding(.horizontal)
                                         .transition(.opacity)
-                                        .animation(.easeInOut(duration: 0.2), value: selectedEmotions)
+                                        .animation(.easeInOut(duration: 0.2), value: emotionRouter.lastSelectedEmotion)
                                 }
 
-                                if !selectedEmotions.isEmpty {
-                                    EmotionSummaryView(emotions: selectedEmotions)
+                                if !emotionRouter.selectedEmotions.isEmpty {
+                                    EmotionSummaryView(emotions: emotionRouter.selectedEmotions)
                                         .id("emotionSummary")
                                         .transition(.opacity)
                                 }
                             }
-                            .onChange(of: selectedEmotions) {
+                            .onChange(of: emotionRouter.selectedEmotions) {
                                 withAnimation {
                                     proxy.scrollTo("emotionSummary", anchor: .center)
                                 }
@@ -192,10 +213,8 @@ struct ContentView: View {
 
                 // Footer
                 FooterView(checkInData: checkInData)
-            }
-            .background(AppTheme.colors.secondaryBackground)
-            .navigationBarHidden(true)
         }
+        .background(AppTheme.colors.secondaryBackground)
         .sheet(isPresented: $showProfileCreation) {
             ProfileCreationView(isPresented: $showProfileCreation,
                               userName: $userName,
@@ -246,7 +265,29 @@ struct SectionHeader: View {
     }
 }
 
-#Preview {
-    ContentView()
+#if DEBUG
+#Preview("Home (mock)") {
+    ContentViewPreviewHost()
 }
- 
+
+private struct ContentViewPreviewHost: View {
+    @StateObject private var auth = AuthManager(previewLoggedIn: true, previewUser: PreviewSampleData.currentUser)
+    @StateObject private var tabRouter = TabRouter()
+    @StateObject private var feedViewModel = FeedViewModel()
+    @StateObject private var emotionRouter = EmotionRouter()
+    private let firestore = FirestoreManager.shared
+
+    var body: some View {
+        ContentView()
+            .environmentObject(auth)
+            .environmentObject(firestore)
+            .environmentObject(tabRouter)
+            .environmentObject(feedViewModel)
+            .environmentObject(emotionRouter)
+            .onAppear {
+                firestore.applyPreviewPosts(PreviewSampleData.sampleFeedPosts)
+            }
+    }
+}
+#endif
+
