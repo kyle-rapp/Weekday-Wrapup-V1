@@ -67,7 +67,16 @@ final class AuthManager: ObservableObject {
                let name = data["name"] as? String,
                let email = data["email"] as? String {
                 let created = (data["createdAt"] as? Timestamp)?.dateValue() ?? Date()
-                currentUser = AppUser(id: user.uid, name: name, email: email, createdAt: created)
+                let streak = Self.intFromFirestore(data["checkInStreak"])
+                let lastCheckIn = (data["lastCheckInDate"] as? Timestamp)?.dateValue()
+                currentUser = AppUser(
+                    id: user.uid,
+                    name: name,
+                    email: email,
+                    createdAt: created,
+                    checkInStreak: streak,
+                    lastCheckInDate: lastCheckIn
+                )
                 if data["following"] == nil {
                     try? await ref.updateData(["following": [String]()])
                 }
@@ -79,7 +88,8 @@ final class AuthManager: ObservableObject {
                     "name": name,
                     "email": email,
                     "createdAt": Timestamp(date: created),
-                    "following": [String]()
+                    "following": [String](),
+                    "checkInStreak": 0
                 ])
                 currentUser = AppUser(id: user.uid, name: name, email: email, createdAt: created)
             }
@@ -104,7 +114,8 @@ final class AuthManager: ObservableObject {
                 "name": name,
                 "email": email,
                 "createdAt": Timestamp(date: created),
-                "following": [String]()
+                "following": [String](),
+                "checkInStreak": 0
             ])
             let change = result.user.createProfileChangeRequest()
             change.displayName = name
@@ -127,6 +138,40 @@ final class AuthManager: ObservableObject {
         } catch {
             authError = error.localizedDescription
         }
+    }
+
+    /// Call after a wrapup is successfully posted to the feed. Updates Firestore `users` streak fields.
+    func recordSuccessfulWrapupPost() async {
+        guard let db, let uid = currentUser?.id, var user = currentUser else { return }
+        let cal = Calendar.current
+        let now = Date()
+        var newStreak = user.checkInStreak
+        if let last = user.lastCheckInDate {
+            if cal.isDateInYesterday(last) {
+                newStreak += 1
+            } else if !cal.isDateInToday(last) {
+                newStreak = 1
+            }
+        } else {
+            newStreak = 1
+        }
+        do {
+            try await db.collection("users").document(uid).updateData([
+                "checkInStreak": newStreak,
+                "lastCheckInDate": Timestamp(date: now)
+            ])
+            user.checkInStreak = newStreak
+            user.lastCheckInDate = now
+            currentUser = user
+        } catch {
+            print("❌ Streak update failed: \(error.localizedDescription)")
+        }
+    }
+
+    private static func intFromFirestore(_ value: Any?) -> Int {
+        if let i = value as? Int { return i }
+        if let n = value as? NSNumber { return n.intValue }
+        return 0
     }
 
     func signOut() async {

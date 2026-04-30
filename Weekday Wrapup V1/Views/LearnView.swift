@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// FILE: Views/LearnView.swift
 /// Learn tab: structured cards, feelings wheel, definitions, education, steps, box breathing.
@@ -33,36 +34,40 @@ struct LearnSectionCard<Content: View>: View {
 struct LearnView: View {
     @EnvironmentObject private var emotionRouter: EmotionRouter
 
+    private var currentEmotionKey: String? {
+        emotionRouter.lastSelectedLearn ?? emotionRouter.learnEmotions.first
+    }
+
     private static let guideSteps: [LearnStepItem] = [
         LearnStepItem(
             number: 1,
             title: "Identify what you are feeling",
             description: "Pause and name the strongest emotion you notice, even if it’s broad.",
-            systemImage: "eye.fill"
+            systemImage: "brain.head.profile"
         ),
         LearnStepItem(
             number: 2,
             title: "Acknowledge your emotions",
             description: "Let the feeling exist without judging it as good or bad.",
-            systemImage: "hand.raised.fill"
+            systemImage: "heart.fill"
         ),
         LearnStepItem(
             number: 3,
             title: "Get curious about the message",
             description: "Ask gently: what might this emotion be trying to tell me?",
-            systemImage: "questionmark.circle.fill"
+            systemImage: "sparkles"
         ),
         LearnStepItem(
             number: 4,
             title: "Build confidence handling it",
             description: "Recall one time you moved through a hard feeling before.",
-            systemImage: "shield.lefthalf.filled"
+            systemImage: "leaf"
         ),
         LearnStepItem(
             number: 5,
             title: "Know you can handle it long-term",
             description: "Skills grow with practice; discomfort doesn’t mean you’re failing.",
-            systemImage: "infinity"
+            systemImage: "moon"
         ),
         LearnStepItem(
             number: 6,
@@ -74,7 +79,7 @@ struct LearnView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 24) {
                 introSection
                 wheelSection
                 definitionSection
@@ -82,6 +87,7 @@ struct LearnView: View {
                 sixStepGuideSection
                 boxBreathingSection
                 breathingEducationCards
+                emotionInsightsSection
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 20)
@@ -129,7 +135,7 @@ struct LearnView: View {
 
     private var wheelSection: some View {
         LearnSectionCard {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 18) {
                 Label("Explore the wheel", systemImage: "circle.hexagongrid.fill")
                     .font(.title3.bold())
                     .foregroundStyle(AppTheme.colors.textPrimary)
@@ -143,11 +149,12 @@ struct LearnView: View {
                     Spacer(minLength: 0)
                     FeelingWheelView(
                         selectedEmotions: Binding(
-                            get: { emotionRouter.selectedEmotions },
-                            set: { emotionRouter.updateSelection($0) }
+                            get: { Set(emotionRouter.learnEmotions) },
+                            set: { emotionRouter.updateLearnSelection(Array($0).sorted()) }
                         )
                     )
-                        .frame(width: 320, height: 320)
+                        .frame(width: 340, height: 400)
+                        .padding(.vertical, 8)
                         .contentShape(Rectangle())
                     Spacer(minLength: 0)
                 }
@@ -166,21 +173,34 @@ struct LearnView: View {
                     .foregroundStyle(AppTheme.colors.textPrimary)
 
                 Group {
-                    let key = emotionRouter.lastSelectedEmotion
-                        ?? emotionRouter.selectedEmotions.sorted().first
+                    let trimmedKey = currentEmotionKey?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-                    if let key, !key.isEmpty {
-                        Text(key)
+                    if !trimmedKey.isEmpty {
+                        Text(trimmedKey)
                             .font(.title.bold())
                             .foregroundStyle(AppTheme.colors.pine)
 
-                        Text(LearnEmotionDefinitionLookup.definition(for: key))
+                        Text(LearnEmotionDefinitionLookup.definition(for: trimmedKey))
                             .font(.body)
                             .foregroundStyle(AppTheme.colors.textSecondary)
                             .multilineTextAlignment(.leading)
                             .lineSpacing(5)
                             .fixedSize(horizontal: false, vertical: true)
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Try this")
+                                .font(.headline)
+                                .foregroundStyle(AppTheme.colors.textPrimary)
+                            ForEach(actionSuggestions(for: trimmedKey), id: \.self) { action in
+                                Text("• \(action)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(AppTheme.colors.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(.top, 8)
                     } else {
                         Text("Tap a feeling to see its meaning")
                             .font(.body)
@@ -191,14 +211,32 @@ struct LearnView: View {
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
                 }
-                .animation(
-                    .easeInOut(duration: 0.28),
-                    value: emotionRouter.lastSelectedEmotion
-                        ?? emotionRouter.selectedEmotions.sorted().first
-                )
+                .animation(.easeInOut(duration: 0.25), value: emotionRouter.learnEmotions)
                 .frame(minHeight: 100, alignment: .topLeading)
             }
         }
+    }
+
+    private var emotionInsightsSection: some View {
+        LearnSectionCard {
+            EmotionInsightsView()
+        }
+    }
+
+    private func actionSuggestions(for emotion: String) -> [String] {
+        let e = emotion.lowercased()
+
+        if ["anxious", "scared", "insecure"].contains(e) {
+            return ["Try box breathing for 2 minutes", "Write down what's worrying you", "Focus on what you can control"]
+        }
+        if ["angry", "frustrated", "mad"].contains(e) {
+            return ["Take a short walk", "Step away before reacting", "Write what triggered you"]
+        }
+        if ["sad", "lonely"].contains(e) {
+            return ["Text someone you trust", "Listen to music that matches your mood", "Rest without pressure"]
+        }
+
+        return ["Pause and take 3 slow breaths", "Check in with your body", "Name what you need right now"]
     }
 
     // MARK: Section 4 — Education (three cards)
@@ -255,7 +293,7 @@ struct LearnView: View {
 
     private var sixStepGuideSection: some View {
         LearnSectionCard {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 16) {
                 Label("A 6-step path", systemImage: "list.number")
                     .font(.title3.bold())
                     .foregroundStyle(AppTheme.colors.textPrimary)
@@ -393,6 +431,10 @@ struct StepRowView: View {
     let description: String
     let systemImage: String
 
+    private var resolvedIcon: String {
+        UIImage(systemName: systemImage) != nil ? systemImage : "sparkles"
+    }
+
     var body: some View {
         let safeTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Step" : title
         let safeDescription = description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -400,55 +442,114 @@ struct StepRowView: View {
             : description
 
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 14) {
-                ZStack {
-                    Circle()
-                        .fill(AppTheme.colors.sand.opacity(0.75))
-                        .frame(width: 40, height: 40)
-                    Text("\(number)")
-                        .font(.headline)
-                        .foregroundStyle(AppTheme.colors.textPrimary)
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
-                        Image(systemName: systemImage)
-                            .foregroundStyle(AppTheme.colors.ocean)
-                            .font(.body.weight(.semibold))
-                        Text(safeTitle)
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(AppTheme.colors.textPrimary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Text(safeDescription)
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.colors.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            HStack(alignment: .firstTextBaseline) {
+                Text("\(number)")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(AppTheme.colors.textSecondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(AppTheme.colors.sand.opacity(0.6)))
+                Spacer(minLength: 0)
             }
+
+            Image(systemName: resolvedIcon)
+                .font(.system(size: 28))
+                .foregroundStyle(AppTheme.colors.ocean)
+                .frame(height: 40)
+                .accessibilityLabel("Step icon")
+
+            Text(safeTitle)
+                .font(.headline)
+                .foregroundStyle(AppTheme.colors.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(safeDescription)
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(14)
+        .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(AppTheme.colors.secondaryBackground.opacity(0.85))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(AppTheme.colors.background)
+                .shadow(color: AppTheme.colors.bark.opacity(0.12), radius: 4, x: 0, y: 2)
         )
     }
 }
 
-// MARK: - Box breathing (high-contrast, obvious motion)
+// MARK: - Box breathing (simple Timer + corner positions; stable in ScrollView)
 
 struct BoxBreathingView: View {
-    private let phaseDuration: TimeInterval = 4
+    @State private var step = 0
+    @State private var slowMode = false
+    @State private var loopTimer: Timer?
 
-    @State private var phaseIndex: Int = 0
+    private let size: CGFloat = 180
+    private let durationFast: Double = 4
+    private let durationSlow: Double = 6
 
-    private var phaseLabel: String {
-        switch phaseIndex % 4 {
+    var body: some View {
+        VStack(spacing: 16) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 24)
+                    .fill(Color.gray.opacity(0.15))
+
+                RoundedRectangle(cornerRadius: 24)
+                    .stroke(Color.blue.opacity(0.3), lineWidth: 2)
+
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 16, height: 16)
+                    .position(dotPosition)
+                    .animation(.linear(duration: currentDuration), value: step)
+            }
+            .frame(width: size, height: size)
+
+            Text(phaseText)
+                .font(.headline)
+
+            Text("Tap to change speed")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: 220)
+        .contentShape(Rectangle())
+        .onAppear {
+            startLoop()
+        }
+        .onDisappear {
+            loopTimer?.invalidate()
+            loopTimer = nil
+        }
+        .onTapGesture {
+            slowMode.toggle()
+            startLoop()
+        }
+    }
+
+    private var currentDuration: Double {
+        slowMode ? durationSlow : durationFast
+    }
+
+    private var dotPosition: CGPoint {
+        let padding: CGFloat = 20
+        let minX = padding
+        let maxX = size - padding
+        let minY = padding
+        let maxY = size - padding
+
+        switch step % 4 {
+        case 0: return CGPoint(x: minX, y: minY)
+        case 1: return CGPoint(x: maxX, y: minY)
+        case 2: return CGPoint(x: maxX, y: maxY)
+        default: return CGPoint(x: minX, y: maxY)
+        }
+    }
+
+    private var phaseText: String {
+        switch step % 4 {
         case 0: return "Inhale"
         case 1: return "Hold"
         case 2: return "Exhale"
@@ -456,75 +557,17 @@ struct BoxBreathingView: View {
         }
     }
 
-    private var breathScale: CGFloat {
-        switch phaseIndex % 4 {
-        case 0: return 1.08
-        case 1: return 1.08
-        case 2: return 0.82
-        default: return 0.82
-        }
-    }
-
-    private var strokeOpacity: Double {
-        switch phaseIndex % 4 {
-        case 0, 1: return 1.0
-        case 2: return 0.55
-        default: return 0.55
-        }
-    }
-
-    var body: some View {
-        VStack(spacing: 20) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(AppTheme.colors.ocean.opacity(0.22))
-                    .frame(width: 140, height: 140)
-
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.35), lineWidth: 2)
-                    .frame(width: 140, height: 140)
-
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(
-                        AppTheme.colors.ocean,
-                        lineWidth: 5
-                    )
-                    .opacity(strokeOpacity)
-                    .frame(width: 140, height: 140)
-                    .scaleEffect(breathScale)
-                    .animation(.easeInOut(duration: phaseDuration), value: phaseIndex)
-            }
-            .frame(width: 160, height: 160)
-
-            VStack(spacing: 6) {
-                Text(phaseLabel)
-                    .font(.title2.bold())
-                    .foregroundStyle(AppTheme.colors.textPrimary)
-
-                Text("Phase \((phaseIndex % 4) + 1) of 4 · 4 seconds each")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(AppTheme.colors.textSecondary)
-
-                HStack(spacing: 6) {
-                    ForEach(0..<4, id: \.self) { i in
-                        Circle()
-                            .fill(i == (phaseIndex % 4) ? AppTheme.colors.moss : Color.primary.opacity(0.12))
-                            .frame(width: 8, height: 8)
-                    }
-                }
-                .padding(.top, 4)
-            }
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-        }
-        .onAppear {
-            phaseIndex = 0
-        }
-        .onReceive(Timer.publish(every: phaseDuration, on: .main, in: .common).autoconnect()) { _ in
-            withAnimation(.easeInOut(duration: 0.4)) {
-                phaseIndex = (phaseIndex + 1) % 4
+    private func startLoop() {
+        loopTimer?.invalidate()
+        step = 0
+        let interval = currentDuration
+        let timer = Timer(timeInterval: interval, repeats: true) { _ in
+            withAnimation {
+                step += 1
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        loopTimer = timer
     }
 }
 
@@ -603,42 +646,47 @@ enum LearnEmotionDefinitionLookup {
         }
 
         if let d = emojiDefinitions[trimmed], !d.isEmpty { return d }
-        if let d = wheelMap[trimmed], !d.isEmpty { return d }
-        if let d = wheelMap[trimmed.lowercased()], !d.isEmpty { return d }
+
+        if let d = wheelMap.first(where: { $0.key.caseInsensitiveCompare(trimmed) == .orderedSame })?.value, !d.isEmpty {
+            return d
+        }
 
         for (primary, secondaries) in FeelingWheelView.emotionMap {
-            if primary.caseInsensitiveCompare(trimmed) == .orderedSame {
-                if let d = wheelMap[primary], !d.isEmpty { return d }
-                break
-            }
-            if secondaries.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
-                if let d = wheelMap[trimmed.lowercased()], !d.isEmpty { return d }
-                if let match = secondaries.first(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }),
-                   let d = wheelMap[match], !d.isEmpty {
+            if let match = secondaries.first(where: {
+                $0.caseInsensitiveCompare(trimmed) == .orderedSame
+            }) {
+                if let d = wheelMap[match.lowercased()], !d.isEmpty {
                     return d
                 }
-                break
+                if let d = wheelMap[match], !d.isEmpty {
+                    return d
+                }
+            }
+
+            if primary.caseInsensitiveCompare(trimmed) == .orderedSame {
+                if let d = wheelMap[primary], !d.isEmpty {
+                    return d
+                }
             }
         }
 
         let pretty = trimmed.capitalized
-        return "You’re exploring “\(pretty)”. Keep noticing what it feels like in your body—gentle curiosity often helps the meaning unfold."
+        return "You’re exploring “\(pretty)”. Stay curious—notice what it feels like in your body."
     }
 }
 
 #if DEBUG
 #Preview {
-    LearnViewPreviewHost()
-}
-
-private struct LearnViewPreviewHost: View {
-    @StateObject private var emotionRouter = EmotionRouter()
-
-    var body: some View {
-        NavigationStack {
-            LearnView()
-                .environmentObject(emotionRouter)
-        }
+    NavigationStack {
+        LearnView()
+    }
+    .environmentObject(AuthManager(previewLoggedIn: true, previewUser: PreviewSampleData.currentUser))
+    .environmentObject(FirestoreManager.shared)
+    .environmentObject(EmotionRouter())
+    .onAppear {
+        FirestoreManager.shared.applyPreviewPosts(
+            PreviewSampleData.sampleFeedPosts + [PreviewSampleData.previewUserWrapupPost]
+        )
     }
 }
 #endif

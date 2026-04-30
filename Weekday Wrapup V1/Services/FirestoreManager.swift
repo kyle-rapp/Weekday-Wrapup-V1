@@ -11,14 +11,20 @@ final class FirestoreManager: ObservableObject {
     @Published private(set) var posts: [FeedPost] = []
     @Published private(set) var detailComments: [Comment] = []
     @Published private(set) var followingIds: Set<String> = []
+    /// Group ids the current user belongs to (for `PostVisibility.groups` feed filtering).
+    @Published private(set) var joinedGroupIds: Set<String> = []
+    @Published private(set) var myGroups: [SocialGroup] = []
     /// User-visible Firestore / auth errors (optional alert in views).
     @Published var errorMessage: String?
 
     /// Lazily created so Xcode Previews never touch Firestore unless a Firebase-backed method runs.
     private lazy var db: Firestore = Firestore.firestore()
+    /// Latest documents from Firestore before visibility filtering.
+    private var allPostsRaw: [FeedPost] = []
     private var postsListener: ListenerRegistration?
     private var commentsListener: ListenerRegistration?
     private var followingListener: ListenerRegistration?
+    private var groupsListener: ListenerRegistration?
 
     private init() {}
 
@@ -89,7 +95,10 @@ final class FirestoreManager: ObservableObject {
         stopPostsListener()
         stopCommentsListener()
         stopFollowingListener()
+        stopGroupsListener()
         followingIds = []
+        joinedGroupIds = []
+        myGroups = []
         errorMessage = nil
     }
 
@@ -111,15 +120,175 @@ final class FirestoreManager: ObservableObject {
                 guard let documents = snapshot?.documents else { return }
                 let mapped = documents.compactMap { FeedPost(document: $0) }
                 Task { @MainActor in
-                    self.posts = mapped
+                    self.allPostsRaw = mapped
+                    self.applyPostVisibilityFilter()
                 }
             }
+    }
+
+    private func applyPostVisibilityFilter() {
+        let uid = Auth.auth().currentUser?.uid
+        posts = allPostsRaw.filter { Self.postMeetsVisibility($0, viewerId: uid, joinedGroupIds: joinedGroupIds) }
+    }
+
+    /// Feed visibility: public / friends-style posts for all; private = author only; groups = author + shared group members.
+    private static func postMeetsVisibility(_ post: FeedPost, viewerId: String?, joinedGroupIds: Set<String>) -> Bool {
+        guard let viewerId else { return false }
+        if post.authorId == viewerId { return true }
+        switch post.visibility {
+        case .public:
+            return true
+        case .friends:
+            return true
+        case .private:
+            return false
+        case .groups:
+            let ids = post.sharedGroupIds
+            guard !ids.isEmpty else { return false }
+            return ids.contains(where: { joinedGroupIds.contains($0) })
+        }
+    }
+
+    // MARK: - Groups (`groups` collection)
+
+    func startGroupsListener(userId: String) {
+        #if DEBUG
+        if Self.isXcodePreview { return }
+        #endif
+        stopGroupsListener()
+        groupsListener = db.collection("groups")
+            .whereField("memberIds", arrayContains: userId)
+            .addSnapshotListener { [weak self] snapshot, error in
+                guard let self else { return }
+                if let error {
+                    Task { @MainActor in
+                        self.reportListenerError("Groups listener", error: error)
+                    }
+                    return
+                }
+                guard let documents = snapshot?.documents else { return }
+                    let groups: [SocialGroup] = documents.compactMap { doc in
+                    let data = doc.data()
+                    guard let name = data["name"] as? String,
+                          let memberIds = data["memberIds"] as? [String] else { return nil }
+                    let owner = (data["ownerId"] as? String) ?? (data["createdBy"] as? String) ?? ""
+                    guard !owner.isEmpty else { return nil }
+                    let invited = data["invitedContacts"] as? [String]
+                    let allowHistory = data["allowHistoryAccessForNewMembers"] as? Bool
+                    let desc = data["description"] as? String
+                    return SocialGroup(
+                        id: doc.documentID,
+                        name: name,
+                        memberIds: memberIds,
+                        createdBy: owner,
+                        invitedContacts: invited,
+                        allowHistoryAccessForNewMembers: allowHistory,
+                        description: desc
+                    )
+                }
+                Task { @MainActor in
+                    self.myGroups = groups.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                    self.joinedGroupIds = Set(groups.map(\.id))
+                    self.applyPostVisibilityFilter()
+                }
+            }
+    }
+
+    func stopGroupsListener() {
+        groupsListener?.remove()
+        groupsListener = nil
+        joinedGroupIds = []
+        myGroups = []
+    }
+
+    /// Creates a `groups` document. Writes `ownerId` and legacy `createdBy` (same uid) for compatibility.
+    func createGroup(
+        name: String,
+        description: String? = nil,
+        memberIds: [String],
+        ownerId: String,
+        invitedContacts: [String]? = nil,
+        allowHistoryAccessForNewMembers: Bool? = nil
+    ) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: ownerId)
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw NSError(domain: "FirestoreManager", code: 400, userInfo: [NSLocalizedDescriptionKey: "Group name is required"])
+        }
+        var members = Set(memberIds)
+        members.insert(ownerId)
+        let trimmedDescription = description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmedInvites = (invitedContacts ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        try await runWrite(successLog: "Group created") {
+            let ref = self.db.collection("groups").document()
+            var payload: [String: Any] = [
+                "name": trimmed,
+                "memberIds": Array(members),
+                "ownerId": ownerId,
+                "createdBy": ownerId,
+                "createdAt": FieldValue.serverTimestamp()
+            ]
+            if !trimmedDescription.isEmpty {
+                payload["description"] = trimmedDescription
+            }
+            if !trimmedInvites.isEmpty {
+                payload["invitedContacts"] = trimmedInvites
+            }
+            if let allowHistoryAccessForNewMembers {
+                payload["allowHistoryAccessForNewMembers"] = allowHistoryAccessForNewMembers
+            }
+            try await ref.setData(payload)
+        }
+    }
+
+    func updateGroup(
+        groupId: String,
+        memberIds: [String],
+        invitedContacts: [String],
+        allowHistoryAccessForNewMembers: Bool,
+        actingUserId: String
+    ) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: actingUserId)
+        let ref = db.collection("groups").document(groupId)
+        let snap = try await ref.getDocument()
+        guard let data = snap.data() else {
+            throw NSError(domain: "FirestoreManager", code: 404, userInfo: [NSLocalizedDescriptionKey: "Group not found"])
+        }
+        let owner = (data["ownerId"] as? String) ?? (data["createdBy"] as? String) ?? ""
+        guard owner == actingUserId else {
+            throw NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "Only the group owner can change settings"])
+        }
+        var members = Set(memberIds)
+        members.insert(owner)
+        let trimmedInvites = invitedContacts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let update: [String: Any] = [
+            "memberIds": Array(members),
+            "invitedContacts": trimmedInvites,
+            "allowHistoryAccessForNewMembers": allowHistoryAccessForNewMembers
+        ]
+        try await runWrite(successLog: "Group updated") {
+            try await ref.updateData(update)
+        }
     }
 
     func stopPostsListener() {
         postsListener?.remove()
         postsListener = nil
+        allPostsRaw = []
         posts = []
+    }
+
+    /// Wrapups authored by `userId`, newest first, for history and insights.
+    func wrapupHistoryEntries(forUserId userId: String?) -> [CheckInData] {
+        guard let userId else { return [] }
+        return posts
+            .filter { $0.authorId == userId }
+            .sorted { ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) }
+            .map { CheckInData.fromPostedWrapup($0) }
     }
 
     #if DEBUG
@@ -127,13 +296,14 @@ final class FirestoreManager: ObservableObject {
     func applyPreviewPosts(_ newPosts: [FeedPost]) {
         postsListener?.remove()
         postsListener = nil
-        posts = newPosts
+        allPostsRaw = newPosts
+        applyPostVisibilityFilter()
     }
 
     func applyPreviewComments(_ list: [Comment]) {
         commentsListener?.remove()
         commentsListener = nil
-        detailComments = list
+        detailComments = Comment.nestedTree(from: list)
     }
 
     func applyPreviewFollowing(_ ids: Set<String>) {
@@ -161,9 +331,10 @@ final class FirestoreManager: ObservableObject {
                     return
                 }
                 guard let documents = snapshot?.documents else { return }
-                let mapped = documents.compactMap { Comment(document: $0) }
+                let flat = documents.compactMap { Comment(document: $0) }
+                let nested = Comment.nestedTree(from: flat)
                 Task { @MainActor in
-                    self.detailComments = mapped
+                    self.detailComments = nested
                 }
             }
     }
@@ -192,10 +363,123 @@ final class FirestoreManager: ObservableObject {
                 "userId": userId,
                 "userName": userName,
                 "text": trimmed,
-                "createdAt": FieldValue.serverTimestamp()
+                "createdAt": FieldValue.serverTimestamp(),
+                "likeCount": 0,
+                "likedBy": [] as [String],
+                "reactions": [:] as [String: Any]
             ], forDocument: commentRef)
             batch.updateData(["commentCount": FieldValue.increment(Int64(1))], forDocument: postRef)
             try await batch.commit()
+        }
+    }
+
+    /// Reply under an existing comment (`parentCommentId`). Same subcollection, increments post `commentCount`.
+    func addReplyComment(postId: String, parentCommentId: String, userId: String, userName: String, text: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            let err = NSError(domain: "FirestoreManager", code: 400, userInfo: [NSLocalizedDescriptionKey: "Reply cannot be empty"])
+            errorMessage = err.localizedDescription
+            throw err
+        }
+        try await runWrite(successLog: "Reply added") {
+            let postRef = self.db.collection("posts").document(postId)
+            let commentRef = postRef.collection("comments").document()
+            let batch = self.db.batch()
+            batch.setData([
+                "userId": userId,
+                "userName": userName,
+                "text": trimmed,
+                "parentCommentId": parentCommentId,
+                "createdAt": FieldValue.serverTimestamp(),
+                "likeCount": 0,
+                "likedBy": [] as [String],
+                "reactions": [:] as [String: Any]
+            ], forDocument: commentRef)
+            batch.updateData(["commentCount": FieldValue.increment(Int64(1))], forDocument: postRef)
+            try await batch.commit()
+        }
+    }
+
+    func toggleCommentLike(postId: String, commentId: String, userId: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        try await runWrite(successLog: "Comment like updated") {
+            try await self.performToggleCommentLike(postId: postId, commentId: commentId, userId: userId)
+        }
+    }
+
+    private func performToggleCommentLike(postId: String, commentId: String, userId: String) async throws {
+        let docRef = db.collection("posts").document(postId).collection("comments").document(commentId)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            db.runTransaction({ transaction, errorPointer -> Any? in
+                do {
+                    let snapshot = try transaction.getDocument(docRef)
+                    guard snapshot.exists, let data = snapshot.data() else {
+                        throw NSError(domain: "FirestoreManager", code: 404, userInfo: [NSLocalizedDescriptionKey: "Comment not found"])
+                    }
+                    var likedBy = data["likedBy"] as? [String] ?? []
+                    var likedSet = Set(likedBy)
+                    var likeCount = data["likeCount"] as? Int ?? 0
+                    if likeCount == 0, let n = data["likeCount"] as? NSNumber {
+                        likeCount = n.intValue
+                    }
+                    if likedSet.contains(userId) {
+                        likedSet.remove(userId)
+                        likeCount = max(0, likeCount - 1)
+                    } else {
+                        likedSet.insert(userId)
+                        likeCount += 1
+                    }
+                    likedBy = Array(likedSet)
+                    transaction.updateData([
+                        "likedBy": likedBy,
+                        "likeCount": likeCount
+                    ], forDocument: docRef)
+                    return nil
+                } catch {
+                    errorPointer?.pointee = error as NSError
+                    return nil
+                }
+            }, completion: { _, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            })
+        }
+    }
+
+    func incrementCommentReaction(postId: String, commentId: String, emoji: String, userId: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        try await runWrite(successLog: "Comment reaction updated") {
+            try await self.performIncrementCommentReaction(postId: postId, commentId: commentId, emoji: emoji)
+        }
+    }
+
+    private func performIncrementCommentReaction(postId: String, commentId: String, emoji: String) async throws {
+        let docRef = db.collection("posts").document(postId).collection("comments").document(commentId)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            db.runTransaction({ transaction, errorPointer -> Any? in
+                do {
+                    let snapshot = try transaction.getDocument(docRef)
+                    guard snapshot.exists else {
+                        throw NSError(domain: "FirestoreManager", code: 404, userInfo: [NSLocalizedDescriptionKey: "Comment not found"])
+                    }
+                    let path = FieldPath(["reactions", emoji])
+                    transaction.updateData([path: FieldValue.increment(Int64(1))], forDocument: docRef)
+                    return nil
+                } catch {
+                    errorPointer?.pointee = error as NSError
+                    return nil
+                }
+            }, completion: { _, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            })
         }
     }
 
@@ -232,6 +516,22 @@ final class FirestoreManager: ObservableObject {
 
     func isFollowing(_ userId: String) -> Bool {
         followingIds.contains(userId)
+    }
+
+    /// Display name from `users/{userId}` (best-effort).
+    func userDisplayName(userId: String) async -> String {
+        #if DEBUG
+        if Self.isXcodePreview { return "Friend" }
+        #endif
+        do {
+            let snap = try await db.collection("users").document(userId).getDocument()
+            if let name = snap.data()?["name"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return name
+            }
+        } catch {
+            print("⚠️ userDisplayName: \(error.localizedDescription)")
+        }
+        return "User \(String(userId.prefix(8)))"
     }
 
     func setFollowing(currentUserId: String, targetUserId: String, follow: Bool) async throws {
@@ -333,24 +633,53 @@ final class FirestoreManager: ObservableObject {
             reactionsPayload[key] = count
         }
 
+        if checkIn.visibility == .groups {
+            let g = checkIn.sharedGroupIds ?? []
+            guard !g.isEmpty else {
+                print("❌ Groups visibility requires at least one group")
+                errorMessage = "Choose a group to share with."
+                return false
+            }
+        }
+
         let goalLine: String = weekly.isEmpty ? monthly : weekly
         let displayEmoji = emoji.isEmpty ? "✨" : emoji
 
-        let data: [String: Any] = [
+        var data: [String: Any] = [
             "userId": authorId,
+            /// Explicit author for rules / queries that expect `authorId` (mirrors `userId`).
+            "authorId": authorId,
             "userName": trimmedName,
             "weeklyEmoji": displayEmoji,
             "emotionalInsight": insight,
             "whoopsText": whoops,
             "weeklyGoal": goalLine,
+            "weekNumber": checkIn.weekNumber,
+            "selectedEmotions": checkIn.selectedEmotionsOrdered.isEmpty
+                ? Array(checkIn.selectedEmotions).sorted()
+                : checkIn.selectedEmotionsOrdered,
             "createdAt": FieldValue.serverTimestamp(),
             "likeCount": 0,
             "likedBy": [] as [String],
             "reactions": reactionsPayload,
             "userReactions": [:] as [String: String],
+            "reactionUsers": [:] as [String: String],
             "visibility": checkIn.visibility.rawValue,
             "commentCount": 0
         ]
+        if let intensity = checkIn.intensity {
+            data["intensity"] = intensity
+        }
+        if let tip = checkIn.whatHelped?.trimmingCharacters(in: .whitespacesAndNewlines), !tip.isEmpty {
+            data["whatHelped"] = tip
+            data["helpfulText"] = tip
+        }
+        if let tags = checkIn.helpfulTags, !tags.isEmpty {
+            data["helpfulTags"] = tags
+        }
+        if let g = checkIn.sharedGroupIds, !g.isEmpty {
+            data["sharedGroupIds"] = g
+        }
 
         do {
             let ref = db.collection("posts").document()
@@ -433,7 +762,8 @@ final class FirestoreManager: ObservableObject {
                         throw NSError(domain: "FirestoreManager", code: 404, userInfo: [NSLocalizedDescriptionKey: "Post not found"])
                     }
                     var reactions = FirestoreManager.normalizeReactions(data["reactions"] as? [String: Any])
-                    var userReactions = data["userReactions"] as? [String: String] ?? [:]
+                    var userReactions = (data["userReactions"] as? [String: String] ?? [:])
+                        .merging(data["reactionUsers"] as? [String: String] ?? [:]) { existing, _ in existing }
                     let previous = userReactions[userId]
 
                     if previous == emoji {
@@ -450,7 +780,8 @@ final class FirestoreManager: ObservableObject {
 
                     transaction.updateData([
                         "reactions": reactions,
-                        "userReactions": userReactions
+                        "userReactions": userReactions,
+                        "reactionUsers": userReactions
                     ], forDocument: docRef)
                     return nil
                 } catch {
@@ -470,7 +801,7 @@ final class FirestoreManager: ObservableObject {
     // MARK: - Helpers (shared with FeedPost mapping)
 
     static func defaultReactionCounts() -> [String: Int] {
-        ["❤️": 0, "🔥": 0, "😮": 0]
+        FeedReactions.defaultCounts
     }
 
     static func intFromFirestore(_ any: Any?) -> Int {
@@ -481,14 +812,64 @@ final class FirestoreManager: ObservableObject {
     }
 
     static func normalizeReactions(_ dict: [String: Any]?) -> [String: Int] {
-        guard let dict else { return defaultReactionCounts() }
-        var out: [String: Int] = [:]
-        for (k, v) in dict {
-            out[k] = intFromFirestore(v)
+        var out = defaultReactionCounts()
+        if let dict {
+            for (k, v) in dict {
+                out[k] = intFromFirestore(v)
+            }
         }
-        for k in ["❤️", "🔥", "😮"] where out[k] == nil {
+        for k in FeedReactions.all where out[k] == nil {
             out[k] = 0
         }
         return out
+    }
+
+    // MARK: - User preferences (`users/{uid}/preferences/profile`)
+
+    private func userPreferencesProfileRef(userId: String) -> DocumentReference {
+        db.collection("users").document(userId).collection("preferences").document("profile")
+    }
+
+    func fetchUserPreferences(userId: String) async -> UserPreferences? {
+        if Self.isXcodePreview { return nil }
+        do {
+            let snap = try await userPreferencesProfileRef(userId: userId).getDocument()
+            guard snap.exists, let data = snap.data() else { return nil }
+            return try UserPreferences.fromFirestoreDictionary(data)
+        } catch {
+            print("⚠️ fetchUserPreferences: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    func saveUserPreferences(_ preferences: UserPreferences, userId: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        try await runWrite(successLog: "User preferences saved") {
+            let payload = try preferences.asFirestoreDictionary()
+            try await self.userPreferencesProfileRef(userId: userId).setData(payload, merge: true)
+        }
+    }
+
+    /// `users/{userId}/recommendationFeedback/{autoId}` — refine engine over time.
+    func submitRecommendationFeedback(
+        userId: String,
+        recommendationId: String,
+        title: String,
+        reason: String,
+        type: RecommendationType,
+        helpful: Bool
+    ) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        try await runWrite(successLog: "Recommendation feedback saved") {
+            let ref = self.db.collection("users").document(userId).collection("recommendationFeedback").document()
+            try await ref.setData([
+                "recommendationId": recommendationId,
+                "title": title,
+                "reason": reason,
+                "type": type.rawValue,
+                "helpful": helpful,
+                "createdAt": FieldValue.serverTimestamp()
+            ])
+        }
     }
 }

@@ -7,6 +7,7 @@ struct FooterView: View {
     @EnvironmentObject private var auth: AuthManager
     @EnvironmentObject private var firestore: FirestoreManager
     @EnvironmentObject private var tabRouter: TabRouter
+    @EnvironmentObject private var emotionRouter: EmotionRouter
 
     var body: some View {
         HStack(spacing: 12) {
@@ -18,6 +19,7 @@ struct FooterView: View {
                     .environmentObject(auth)
                     .environmentObject(firestore)
                     .environmentObject(tabRouter)
+                    .environmentObject(emotionRouter)
             }
         }
         .padding()

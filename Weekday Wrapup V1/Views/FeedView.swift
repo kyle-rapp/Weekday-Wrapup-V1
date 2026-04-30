@@ -12,34 +12,95 @@ struct FeedView: View {
     @EnvironmentObject private var auth: AuthManager
     @State private var showFirestoreAlert = false
     @State private var firestoreAlertText = ""
+    /// Presented above the scroll view so the dimming layer isn’t clipped.
+    @State private var expandedReactionPostId: String?
+    @State private var feedPresentCreateGroup = false
+
+    private var myHistoryEntries: [CheckInData] {
+        firestore.wrapupHistoryEntries(forUserId: auth.currentUser?.id)
+    }
+
+    private var palettePost: FeedPost? {
+        guard let id = expandedReactionPostId else { return nil }
+        return firestore.posts.first(where: { $0.id == id })
+    }
+
+    private var paletteViewerId: String? { auth.currentUser?.id }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 24) {
-                if firestore.posts.isEmpty {
-                    Text("No posts yet. Share a wrapup from the Share tab!")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.top, 48)
-                        .padding(.horizontal)
-                } else {
-                    ForEach(firestore.posts) { post in
-                        Button {
-                            feedViewModel.openPost(post)
-                        } label: {
-                            FeedPostCard(post: post)
+        ZStack {
+            ScrollView {
+                LazyVStack(spacing: 24) {
+                    if firestore.posts.isEmpty {
+                        Text("No posts yet. Share a wrapup from the Share tab!")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.top, 48)
+                            .padding(.horizontal)
+                    } else {
+                        ForEach(firestore.posts) { post in
+                            FeedPostCard(post: post, expandedReactionPostId: $expandedReactionPostId)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    feedViewModel.openPost(post)
+                                }
                         }
-                        .buttonStyle(.plain)
                     }
                 }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 22)
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 22)
+
+            if palettePost != nil {
+                feedReactionPaletteOverlay
+                    .transition(.opacity.combined(with: .scale(scale: 0.94)))
+                    .zIndex(1)
+            }
         }
+        .animation(.spring(response: 0.38, dampingFraction: 0.82), value: expandedReactionPostId)
         .background(feedBackground.ignoresSafeArea())
         .navigationTitle("Feed")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if auth.currentUser != nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    HStack(spacing: 18) {
+                        NavigationLink {
+                            GroupsView()
+                        } label: {
+                            VStack(spacing: 2) {
+                                Image(systemName: "person.3.sequence.fill")
+                                    .font(.body.weight(.semibold))
+                                Text("Groups")
+                                    .font(.caption2)
+                                    .foregroundStyle(.primary)
+                                    .opacity(0.9)
+                            }
+                            .foregroundStyle(.primary)
+                            .frame(minWidth: 48)
+                        }
+                        .contextMenu {
+                            Button {
+                                feedPresentCreateGroup = true
+                            } label: {
+                                Label("Create Group", systemImage: "plus.circle")
+                            }
+                        }
+                        .accessibilityLabel("Groups")
+
+                        NavigationLink {
+                            HistoryView(entries: myHistoryEntries)
+                        } label: {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(AppTheme.colors.ocean)
+                        }
+                        .accessibilityLabel("Past wrapups")
+                    }
+                }
+            }
+        }
         .navigationBarBackButtonHidden(false)
         .onChange(of: firestore.errorMessage) { _, message in
             guard let message, !message.isEmpty else { return }
@@ -54,6 +115,48 @@ struct FeedView: View {
         } message: {
             Text(firestoreAlertText)
         }
+        .sheet(isPresented: $feedPresentCreateGroup) {
+            NavigationStack {
+                CreateGroupView()
+            }
+            .environmentObject(firestore)
+            .environmentObject(auth)
+        }
+    }
+
+    @ViewBuilder
+    private var feedReactionPaletteOverlay: some View {
+        if let p = palettePost {
+            ZStack {
+                Color.black.opacity(0.38)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        expandedReactionPostId = nil
+                    }
+
+                VStack {
+                    Spacer()
+                    ExpandedReactionPalette(
+                        reactionCounts: p.reactions,
+                        selectedEmoji: p.reactionForCurrentUser(paletteViewerId),
+                        onPick: { emoji in
+                            guard let uid = paletteViewerId else { return }
+                            Task { @MainActor in
+                                do {
+                                    try await firestore.applyReaction(postId: p.id, userId: uid, emoji: emoji)
+                                    expandedReactionPostId = nil
+                                } catch {
+                                    print("❌ Reaction failed: \(error.localizedDescription)")
+                                }
+                            }
+                        }
+                    )
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 24)
+                }
+            }
+        }
     }
 }
 
@@ -61,16 +164,29 @@ struct FeedView: View {
 
 struct FeedPostCard: View {
     let post: FeedPost
+    @Binding var expandedReactionPostId: String?
     @EnvironmentObject private var firestore: FirestoreManager
     @EnvironmentObject private var auth: AuthManager
     @EnvironmentObject private var feedViewModel: FeedViewModel
 
     private var uid: String? { auth.currentUser?.id }
+    private var livePost: FeedPost {
+        firestore.posts.first(where: { $0.id == post.id }) ?? post
+    }
     private var isFollowingAuthor: Bool {
-        firestore.isFollowing(post.authorId)
+        firestore.isFollowing(livePost.authorId)
     }
 
     var body: some View {
+        cardBody
+            .onLongPressGesture(minimumDuration: 0.45, pressing: nil) {
+                guard uid != nil else { return }
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                expandedReactionPostId = post.id
+            }
+    }
+
+    private var cardBody: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top, spacing: 14) {
                 Image(systemName: "person.circle.fill")
@@ -80,14 +196,14 @@ struct FeedPostCard: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(post.user.name)
+                        Text(livePost.user.name)
                             .font(.headline)
                             .foregroundStyle(.primary)
                         Spacer(minLength: 8)
-                        if let uid, uid != post.authorId {
+                        if let uid, uid != livePost.authorId {
                             Button {
                                 Task {
-                                    await feedViewModel.toggleFollow(authorId: post.authorId, currentUserId: uid)
+                                    await feedViewModel.toggleFollow(authorId: livePost.authorId, currentUserId: uid)
                                 }
                             } label: {
                                 Text(isFollowingAuthor ? "Following" : "Follow")
@@ -102,18 +218,18 @@ struct FeedPostCard: View {
                             .animation(.easeInOut(duration: 0.2), value: isFollowingAuthor)
                         }
                     }
-                    Text("🔥 \(post.user.streak) week streak")
+                    Text("🔥 \(livePost.user.streak) week streak")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     HStack(spacing: 8) {
                         Image(systemName: "lock.fill")
                             .font(.caption2)
-                        Text(post.visibility.rawValue)
+                        Text(livePost.visibility.rawValue)
                             .font(.caption2)
                         Text("·")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
-                        Text(RelativeTimeFormat.string(for: post.createdAt))
+                        Text(RelativeTimeFormat.string(for: livePost.createdAt))
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
@@ -122,7 +238,7 @@ struct FeedPostCard: View {
             }
 
             HStack(spacing: 10) {
-                Text(post.emoji)
+                Text(livePost.emoji)
                     .font(.system(size: 40))
                 Text("Week wrapup")
                     .font(.subheadline.weight(.medium))
@@ -130,46 +246,65 @@ struct FeedPostCard: View {
                 Spacer()
             }
 
-            Text(post.insight)
+            HStack(spacing: 8) {
+                let label = livePost.primaryEmotionDisplayLabel
+                if !label.isEmpty {
+                    Text(label)
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.gray.opacity(0.15))
+                        .clipShape(Capsule())
+                }
+                if let intensity = livePost.intensity {
+                    Text("Intensity \(intensity)/10")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
                 .font(.body)
                 .foregroundStyle(.primary)
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if !post.whoop.isEmpty {
-                Text("Whoops: \(post.whoop)")
+            if !livePost.whoop.isEmpty {
+                Text("Whoops: \(livePost.whoop)")
                     .font(.caption)
                     .foregroundStyle(.orange.opacity(0.9))
             }
-            if !post.goal.isEmpty {
-                Text("Goal: \(post.goal)")
+            if !livePost.goal.isEmpty {
+                Text("Goal: \(livePost.goal)")
                     .font(.caption)
                     .foregroundStyle(.blue.opacity(0.9))
             }
 
-            reactionRow
+            FeedReactionRow(
+                livePost: livePost,
+                uid: uid,
+                onOpenPalette: { expandedReactionPostId = post.id }
+            )
 
             HStack(spacing: 22) {
                 Button {
                     guard let uid else { return }
                     Task { @MainActor in
                         do {
-                            try await firestore.toggleLike(postId: post.id, userId: uid)
+                            try await firestore.toggleLike(postId: livePost.id, userId: uid)
                         } catch {
                             print("❌ Like failed: \(error.localizedDescription)")
                         }
                     }
                 } label: {
-                    Label("\(post.likeCount)", systemImage: post.isLikedByCurrentUser(uid) ? "heart.fill" : "heart")
+                    Label("\(livePost.likeCount)", systemImage: livePost.isLikedByCurrentUser(uid) ? "heart.fill" : "heart")
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(post.isLikedByCurrentUser(uid) ? .pink : .secondary)
+                        .foregroundStyle(livePost.isLikedByCurrentUser(uid) ? .pink : .secondary)
                 }
                 .buttonStyle(.borderless)
                 .disabled(uid == nil)
-                .scaleEffect(post.isLikedByCurrentUser(uid) ? 1.14 : 1.0)
-                .animation(.spring(response: 0.35, dampingFraction: 0.6), value: post.isLikedByCurrentUser(uid))
+                .scaleEffect(livePost.isLikedByCurrentUser(uid) ? 1.14 : 1.0)
+                .animation(.spring(response: 0.35, dampingFraction: 0.6), value: livePost.isLikedByCurrentUser(uid))
 
-                Label("\(post.commentCount)", systemImage: "bubble.right.fill")
+                Label("\(livePost.commentCount)", systemImage: "bubble.right.fill")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
 
@@ -186,40 +321,6 @@ struct FeedPostCard: View {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .stroke(Color.orange.opacity(0.08), lineWidth: 1)
         )
-    }
-
-    private var reactionRow: some View {
-        HStack(spacing: 10) {
-            ForEach(Array(post.reactions.keys.sorted()), id: \.self) { key in
-                Button {
-                    guard let uid else { return }
-                    Task { @MainActor in
-                        do {
-                            try await firestore.applyReaction(postId: post.id, userId: uid, emoji: key)
-                        } catch {
-                            print("❌ Reaction failed: \(error.localizedDescription)")
-                        }
-                    }
-                } label: {
-                    Text("\(key) \(post.reactions[key, default: 0])")
-                        .font(.caption.weight(.medium))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background(
-                            Capsule()
-                                .fill(post.reactionForCurrentUser(uid) == key ? Color.accentColor.opacity(0.2) : Color.orange.opacity(0.1))
-                        )
-                        .overlay(
-                            Capsule()
-                                .stroke(post.reactionForCurrentUser(uid) == key ? Color.accentColor : Color.clear, lineWidth: 1.5)
-                        )
-                }
-                .buttonStyle(.borderless)
-                .disabled(uid == nil)
-                .scaleEffect(post.reactionForCurrentUser(uid) == key ? 1.06 : 1.0)
-                .animation(.spring(response: 0.3, dampingFraction: 0.65), value: post.reactionForCurrentUser(uid))
-            }
-        }
     }
 }
 
@@ -251,10 +352,11 @@ private struct FeedPostCardPreviewHost: View {
     @StateObject private var auth = AuthManager(previewLoggedIn: true, previewUser: PreviewSampleData.currentUser)
     @StateObject private var feedViewModel = FeedViewModel()
     private let firestore = FirestoreManager.shared
+    @State private var expandedReactionPostId: String?
 
     var body: some View {
         ScrollView {
-            FeedPostCard(post: PreviewSampleData.sampleFeedPosts[0])
+            FeedPostCard(post: PreviewSampleData.sampleFeedPosts[0], expandedReactionPostId: $expandedReactionPostId)
                 .environmentObject(auth)
                 .environmentObject(firestore)
                 .environmentObject(feedViewModel)

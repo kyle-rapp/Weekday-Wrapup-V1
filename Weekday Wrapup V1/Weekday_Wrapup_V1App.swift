@@ -19,6 +19,8 @@ struct Weekday_Wrapup_V1App: App {
     init() {
         if ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] != "1" {
             FirebaseApp.configure()
+            NotificationManager.shared.requestPermission()
+            NotificationManager.shared.scheduleCheckInReminder()
         }
     }
 
@@ -56,12 +58,14 @@ private struct RootView: View {
         .onChange(of: auth.currentUser?.id) { _, uid in
             guard auth.isLoggedIn, let uid else { return }
             firestore.startFollowingListener(userId: uid)
+            firestore.startGroupsListener(userId: uid)
         }
         .onAppear {
             if auth.isLoggedIn {
                 firestore.startPostsListener()
                 if let uid = auth.currentUser?.id {
                     firestore.startFollowingListener(userId: uid)
+                    firestore.startGroupsListener(userId: uid)
                 }
             }
         }

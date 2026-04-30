@@ -221,7 +221,7 @@ private struct EmotionWheelCanvas: View {
                 .overlay(wedge.stroke(Color.white, lineWidth: 1.2))
                 .shadow(color: isSelected ? WheelData.color(for: name).opacity(0.4) : .clear, radius: isSelected ? 6 : 0)
                 .opacity(isFaded ? 0.28 : 1)
-                .scaleEffect(isSelected ? 1.02 : 1)
+                .scaleEffect(isSelected ? 1.05 : 1)
                 .animation(anim, value: isFaded)
                 .animation(anim, value: isSelected)
                 .contentShape(wedge)

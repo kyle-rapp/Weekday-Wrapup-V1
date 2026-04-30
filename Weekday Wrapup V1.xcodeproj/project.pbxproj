@@ -10,6 +10,7 @@
 		8D3C5A512F7A372D00B0687C /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = FBA09E001224DD00001A0002 /* FirebaseAuth */; };
 		8D3C5A522F7A372D00B0687C /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = FBA09E001224DD00001A0003 /* FirebaseFirestore */; };
 		8D3C5ACD2F7A37F700B0687C /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = FBA09E001224DD00001A0004 /* FirebaseCore */; };
+		A1B0WK012F7A620000B0687C /* WeatherKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1B0WK022F7A620000B0687C /* WeatherKit.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -33,6 +34,7 @@
 		99D876842D0E80D1001224DD /* Weekday Wrapup V1.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Weekday Wrapup V1.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		99D876942D0E80D6001224DD /* Weekday Wrapup V1Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Weekday Wrapup V1Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		99D8769E2D0E80D6001224DD /* Weekday Wrapup V1UITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Weekday Wrapup V1UITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1B0WK022F7A620000B0687C /* WeatherKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WeatherKit.framework; path = System/Library/Frameworks/WeatherKit.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -61,6 +63,7 @@
 				8D3C5ACD2F7A37F700B0687C /* FirebaseCore in Frameworks */,
 				8D3C5A522F7A372D00B0687C /* FirebaseFirestore in Frameworks */,
 				8D3C5A512F7A372D00B0687C /* FirebaseAuth in Frameworks */,
+				A1B0WK012F7A620000B0687C /* WeatherKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -81,6 +84,14 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		8D3C5DB22FA334B600B0687C /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				A1B0WK022F7A620000B0687C /* WeatherKit.framework */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
 		99D8767B2D0E80D1001224DD = {
 			isa = PBXGroup;
 			children = (
@@ -88,6 +99,7 @@
 				99D876972D0E80D6001224DD /* Weekday Wrapup V1Tests */,
 				99D876A12D0E80D6001224DD /* Weekday Wrapup V1UITests */,
 				99D876852D0E80D1001224DD /* Products */,
+				8D3C5DB22FA334B600B0687C /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
@@ -408,6 +420,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "Weekday Wrapup V1/Weekday Wrapup V1.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"Weekday Wrapup V1/Preview Content\"";
@@ -416,6 +429,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Weekly Wrapup";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Weekday Wrapup uses your location for nearby park suggestions and local weather tips.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -438,6 +452,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "Weekday Wrapup V1/Weekday Wrapup V1.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"Weekday Wrapup V1/Preview Content\"";
@@ -446,6 +461,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Weekly Wrapup";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Weekday Wrapup uses your location for nearby park suggestions and local weather tips.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

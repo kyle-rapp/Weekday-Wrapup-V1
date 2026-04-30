@@ -11,6 +11,7 @@ struct ShareOptionsView: View {
     @EnvironmentObject private var auth: AuthManager
     @EnvironmentObject private var firestore: FirestoreManager
     @EnvironmentObject private var tabRouter: TabRouter
+    @EnvironmentObject private var emotionRouter: EmotionRouter
 
     @State private var showMailComposer = false
     @State private var mailPDFData: Data?
@@ -154,9 +155,22 @@ struct ShareOptionsView: View {
 
             let ok = await firestore.createPost(from: checkInData, authorId: uid, authorName: trimmedName)
             if ok {
+                let tip = checkInData.whatHelped?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !tip.isEmpty,
+                   let key = EmotionRouter.preferredDisplayKey(in: checkInData.selectedEmotions)?.lowercased(),
+                   !key.isEmpty {
+                    var dict = UserDefaults.standard.dictionary(forKey: "whatHelpedByEmotion") as? [String: String] ?? [:]
+                    dict[key] = tip
+                    UserDefaults.standard.set(dict, forKey: "whatHelpedByEmotion")
+                }
+                emotionRouter.saveEntry()
+                UserDefaults.standard.removeObject(forKey: "draftShareEmotions")
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                await auth.recordSuccessfulWrapupPost()
                 isShowing = false
                 feedError = nil
                 tabRouter.completePostToFeedFlow()
+                tabRouter.schedulePostCheckInReflection()
             } else {
                 let msg = firestore.errorMessage ?? "Could not post to the feed."
                 print("❌ Firestore error:", msg)

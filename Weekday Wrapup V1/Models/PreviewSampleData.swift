@@ -8,13 +8,42 @@ enum PreviewSampleData {
         id: "preview-user-id",
         name: "Alex",
         email: "alex@example.com",
-        createdAt: Date()
+        createdAt: Date(),
+        checkInStreak: 4,
+        lastCheckInDate: Calendar.current.date(byAdding: .day, value: -1, to: Date())
     )
 
     static let sampleComments: [Comment] = [
-        Comment(id: "c1", userId: "user-bob", userName: "Bob", text: "Love this energy!", createdAt: Date().addingTimeInterval(-3600)),
-        Comment(id: "c2", userId: "preview-user-id", userName: "Alex", text: "Same here 💛", createdAt: Date().addingTimeInterval(-1200))
+        Comment(id: "c1", userId: "user-bob", userName: "Bob", text: "Love this energy!", createdAt: Date().addingTimeInterval(-3600), likes: 2, likedBy: ["preview-user-id"], reactions: ["❤️": 1]),
+        Comment(
+            id: "c1-r1",
+            userId: "preview-user-id",
+            userName: "Alex",
+            text: "Thanks Bob!",
+            createdAt: Date().addingTimeInterval(-3500),
+            parentCommentId: "c1",
+            reactions: [:]
+        ),
+        Comment(id: "c2", userId: "preview-user-id", userName: "Alex", text: "Same here 💛", createdAt: Date().addingTimeInterval(-1200), reactions: ["👍": 2])
     ]
+
+    /// Extra post for previews so “your” insights/history have sample data.
+    static let previewUserWrapupPost = FeedPost(
+        id: "post-preview-me",
+        authorId: "preview-user-id",
+        user: FeedUser(id: "preview-user-id", name: "Alex", streak: 3),
+        emoji: "🌿",
+        insight: "Felt more grounded by midweek.",
+        whoop: "Late night scroll.",
+        goal: "Stretch 10m daily",
+        wrapupWeekNumber: 11,
+        selectedEmotions: ["Peaceful", "Hopeful", "Peaceful", "tired"],
+        likeCount: 0,
+        likedBy: [],
+        commentCount: 0,
+        visibility: .public,
+        createdAt: Date().addingTimeInterval(-3600)
+    )
 
     static let sampleFeedPosts: [FeedPost] = [
         FeedPost(

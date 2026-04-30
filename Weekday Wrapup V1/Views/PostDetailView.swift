@@ -14,6 +14,7 @@ struct PostDetailView: View {
     @State private var isPostingComment = false
     @State private var showErrorAlert = false
     @State private var alertMessage = ""
+    @State private var showExpandedReactionPalette = false
 
     private var uid: String? { auth.currentUser?.id }
     private var livePost: FeedPost {
@@ -25,99 +26,145 @@ struct PostDetailView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                headerRow
+        ZStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    headerRow
 
-                HStack(spacing: 10) {
-                    Text(livePost.emoji)
-                        .font(.system(size: 52))
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Week wrapup")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Text(RelativeTimeFormat.string(for: livePost.createdAt))
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
+                    HStack(spacing: 10) {
+                        Text(livePost.emoji)
+                            .font(.system(size: 52))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Week wrapup")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(RelativeTimeFormat.string(for: livePost.createdAt))
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        Spacer()
                     }
-                    Spacer()
-                }
 
-                Text(livePost.insight)
-                    .font(.body)
+                    HStack(spacing: 8) {
+                        let label = livePost.primaryEmotionDisplayLabel
+                        if !label.isEmpty {
+                            Text(label)
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(Color.gray.opacity(0.15))
+                                .clipShape(Capsule())
+                        }
+                        if let intensity = livePost.intensity {
+                            Text("Intensity \(intensity)/10")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
 
-                if !livePost.whoop.isEmpty {
-                    Text("Whoops: \(livePost.whoop)")
-                        .foregroundStyle(.orange)
-                }
-                if !livePost.goal.isEmpty {
-                    Text("Weekly goal: \(livePost.goal)")
-                        .foregroundStyle(.blue)
-                }
+                    Text(livePost.insight)
+                        .font(.body)
 
-                reactionRowDetail
+                    if !livePost.whoop.isEmpty {
+                        Text("Whoops: \(livePost.whoop)")
+                            .foregroundStyle(.orange)
+                    }
+                    if !livePost.goal.isEmpty {
+                        Text("Weekly goal: \(livePost.goal)")
+                            .foregroundStyle(.blue)
+                    }
 
-                HStack(spacing: 20) {
-                    Button {
-                        guard let uid else { return }
-                        Task { @MainActor in
-                            do {
-                                try await firestore.toggleLike(postId: livePost.id, userId: uid)
-                            } catch {
-                                print("❌ Like failed: \(error.localizedDescription)")
-                                presentAlert(error.localizedDescription)
-                                firestore.clearErrorMessage()
+                    FeedReactionRow(
+                        livePost: livePost,
+                        uid: uid,
+                        onOpenPalette: {
+                            withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
+                                showExpandedReactionPalette = true
                             }
                         }
-                    } label: {
-                        Label("\(livePost.likeCount) Like\(livePost.likeCount == 1 ? "" : "s")", systemImage: livePost.isLikedByCurrentUser(uid) ? "heart.fill" : "heart")
-                            .foregroundStyle(livePost.isLikedByCurrentUser(uid) ? .pink : .primary)
+                    )
+
+                    HStack(spacing: 20) {
+                        Button {
+                            guard let uid else { return }
+                            Task { @MainActor in
+                                do {
+                                    try await firestore.toggleLike(postId: livePost.id, userId: uid)
+                                } catch {
+                                    print("❌ Like failed: \(error.localizedDescription)")
+                                    presentAlert(error.localizedDescription)
+                                    firestore.clearErrorMessage()
+                                }
+                            }
+                        } label: {
+                            Label("\(livePost.likeCount) Like\(livePost.likeCount == 1 ? "" : "s")", systemImage: livePost.isLikedByCurrentUser(uid) ? "heart.fill" : "heart")
+                                .foregroundStyle(livePost.isLikedByCurrentUser(uid) ? .pink : .primary)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(uid == nil)
+                        .scaleEffect(livePost.isLikedByCurrentUser(uid) ? 1.12 : 1.0)
+                        .animation(.spring(response: 0.35, dampingFraction: 0.62), value: livePost.isLikedByCurrentUser(uid))
+
+                        Label("\(livePost.commentCount) Comment\(livePost.commentCount == 1 ? "" : "s")", systemImage: "bubble.right.fill")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+
+                        Spacer()
                     }
-                    .buttonStyle(.borderless)
-                    .disabled(uid == nil)
-                    .scaleEffect(livePost.isLikedByCurrentUser(uid) ? 1.12 : 1.0)
-                    .animation(.spring(response: 0.35, dampingFraction: 0.62), value: livePost.isLikedByCurrentUser(uid))
 
-                    Label("\(livePost.commentCount) Comment\(livePost.commentCount == 1 ? "" : "s")", systemImage: "bubble.right.fill")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    Divider()
+                        .padding(.vertical, 4)
 
-                    Spacer()
+                    Text("Comments")
+                        .font(.title3.bold())
+
+                    if firestore.detailComments.isEmpty {
+                        Text("No comments yet—be the first to say something kind.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 8)
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(firestore.detailComments) { comment in
+                                FeedCommentRow(postId: livePost.id, comment: comment, depth: 0)
+                                    .transition(.asymmetric(insertion: .opacity.combined(with: .move(edge: .bottom)), removal: .opacity))
+                            }
+                        }
+                        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: firestore.detailComments.count)
+                    }
+
+                    commentComposer
                 }
-
-                Divider()
-                    .padding(.vertical, 4)
-
-                Text("Comments")
-                    .font(.title3.bold())
-
-                if firestore.detailComments.isEmpty {
-                    Text("No comments yet—be the first to say something kind.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 8)
-                } else {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(firestore.detailComments) { comment in
-                            commentRow(comment)
-                                .transition(.asymmetric(insertion: .opacity.combined(with: .move(edge: .bottom)), removal: .opacity))
+                .padding(22)
+            }
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.45)
+                    .onEnded { _ in
+                        guard uid != nil else { return }
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
+                            showExpandedReactionPalette = true
                         }
                     }
-                    .animation(.spring(response: 0.4, dampingFraction: 0.85), value: firestore.detailComments.count)
-                }
+            )
 
-                commentComposer
+            if showExpandedReactionPalette {
+                postDetailReactionOverlay
+                    .transition(.opacity.combined(with: .scale(scale: 0.94)))
+                    .zIndex(1)
             }
-            .padding(22)
         }
+        .animation(.spring(response: 0.38, dampingFraction: 0.82), value: showExpandedReactionPalette)
         .background(detailBackground.ignoresSafeArea())
         .navigationTitle("Post")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
+            feedViewModel.clearReplyTarget()
             firestore.startCommentsListener(postId: post.id)
         }
         .onDisappear {
             firestore.stopCommentsListener()
+            feedViewModel.clearReplyTarget()
         }
         .alert("Something went wrong", isPresented: $showErrorAlert) {
             Button("OK", role: .cancel) {
@@ -178,11 +225,135 @@ struct PostDetailView: View {
         }
     }
 
-    private func commentRow(_ comment: Comment) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private var commentComposer: some View {
+        let trimmed = newComment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let canPost = !trimmed.isEmpty && uid != nil && !isPostingComment
+
+        return VStack(alignment: .leading, spacing: 8) {
+            if feedViewModel.replyTarget != nil {
+                HStack {
+                    Text("Replying to \(feedViewModel.replyTarget?.userName ?? "comment")")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Cancel") {
+                        feedViewModel.clearReplyTarget()
+                    }
+                    .font(.caption.weight(.semibold))
+                }
+                .padding(.horizontal, 4)
+            }
+
+            HStack(alignment: .bottom, spacing: 10) {
+                TextField(
+                    feedViewModel.replyTarget == nil ? "Add a comment…" : "Write a reply…",
+                    text: $newComment,
+                    axis: .vertical
+                )
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(1...4)
+                Button("Post") {
+                    guard let uid, let name = auth.currentUser?.name else { return }
+                    Task { @MainActor in
+                        isPostingComment = true
+                        defer { isPostingComment = false }
+                        do {
+                            if let parent = feedViewModel.replyTarget {
+                                try await feedViewModel.addReply(
+                                    postId: livePost.id,
+                                    parentId: parent.id,
+                                    text: newComment,
+                                    userId: uid,
+                                    userName: name
+                                )
+                                feedViewModel.clearReplyTarget()
+                            } else {
+                                try await firestore.addComment(postId: livePost.id, userId: uid, userName: name, text: newComment)
+                            }
+                            newComment = ""
+                        } catch {
+                            print("❌ Comment failed: \(error.localizedDescription)")
+                            presentAlert(error.localizedDescription)
+                            firestore.clearErrorMessage()
+                        }
+                    }
+                }
+                .font(.body.weight(.semibold))
+                .disabled(!canPost)
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    private var postDetailReactionOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.38)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        showExpandedReactionPalette = false
+                    }
+                }
+
+            VStack {
+                Spacer()
+                ExpandedReactionPalette(
+                    reactionCounts: livePost.reactions,
+                    selectedEmoji: livePost.reactionForCurrentUser(uid),
+                    onPick: { emoji in
+                        guard let uid else { return }
+                        Task { @MainActor in
+                            do {
+                                try await firestore.applyReaction(postId: livePost.id, userId: uid, emoji: emoji)
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                                    showExpandedReactionPalette = false
+                                }
+                            } catch {
+                                print("❌ Reaction failed: \(error.localizedDescription)")
+                                presentAlert(error.localizedDescription)
+                                firestore.clearErrorMessage()
+                            }
+                        }
+                    }
+                )
+                .padding(.horizontal, 16)
+                .padding(.bottom, 28)
+                .scaleEffect(showExpandedReactionPalette ? 1 : 0.9)
+                .opacity(showExpandedReactionPalette ? 1 : 0)
+            }
+        }
+    }
+}
+
+// MARK: - Comment row (likes, reply, nested replies)
+
+private struct FeedCommentRow: View {
+    let postId: String
+    let comment: Comment
+    var depth: Int = 0
+    @EnvironmentObject private var auth: AuthManager
+    @EnvironmentObject private var feedViewModel: FeedViewModel
+
+    private var currentUserId: String? { auth.currentUser?.id }
+
+    private var isLikedByMe: Bool {
+        guard let id = currentUserId else { return false }
+        return comment.likedBy.contains(id)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(comment.userName)
                     .font(.subheadline.weight(.semibold))
+                if comment.parentCommentId != nil {
+                    Text("Reply")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                }
                 Spacer()
                 Text(RelativeTimeFormat.string(for: comment.createdAt))
                     .font(.caption2)
@@ -191,74 +362,79 @@ struct PostDetailView: View {
             Text(comment.text)
                 .font(.subheadline)
                 .foregroundStyle(.primary)
+
+            HStack(spacing: 18) {
+                Button {
+                    guard let uid = currentUserId else { return }
+                    Task {
+                        await feedViewModel.toggleLikeComment(
+                            postId: postId,
+                            comment: comment,
+                            currentUserId: uid
+                        )
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: isLikedByMe ? "heart.fill" : "heart")
+                        Text("\(comment.likes)")
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(isLikedByMe ? .pink : .secondary)
+                }
+                .buttonStyle(.borderless)
+                .disabled(currentUserId == nil)
+
+                Button("Reply") {
+                    feedViewModel.setReplyTarget(comment)
+                }
+                .font(.caption.weight(.semibold))
+            }
+
+            HStack(spacing: 10) {
+                commentReactionChip(emoji: "❤️", postId: postId, comment: comment)
+                commentReactionChip(emoji: "👍", postId: postId, comment: comment)
+                commentReactionChip(emoji: "🙏", postId: postId, comment: comment)
+            }
+
+            ForEach(comment.replies) { reply in
+                FeedCommentRow(postId: postId, comment: reply, depth: depth + 1)
+                    .padding(.leading, CGFloat(min(depth + 1, 6) * 14))
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.orange.opacity(0.08)))
+        .padding(.leading, depth == 0 ? 0 : CGFloat(min(depth, 6) * 4))
     }
 
-    private var commentComposer: some View {
-        let trimmed = newComment.trimmingCharacters(in: .whitespacesAndNewlines)
-        let canPost = !trimmed.isEmpty && uid != nil && !isPostingComment
-
-        return HStack(alignment: .bottom, spacing: 10) {
-            TextField("Add a comment...", text: $newComment, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...4)
-            Button("Post") {
-                guard let uid, let name = auth.currentUser?.name else { return }
-                Task { @MainActor in
-                    isPostingComment = true
-                    defer { isPostingComment = false }
-                    do {
-                        try await firestore.addComment(postId: livePost.id, userId: uid, userName: name, text: newComment)
-                        newComment = ""
-                    } catch {
-                        print("❌ Comment failed: \(error.localizedDescription)")
-                        presentAlert(error.localizedDescription)
-                        firestore.clearErrorMessage()
-                    }
+    @ViewBuilder
+    private func commentReactionChip(emoji: String, postId: String, comment: Comment) -> some View {
+        let count = comment.reactions[emoji] ?? 0
+        Button {
+            guard let uid = currentUserId else { return }
+            Task {
+                await feedViewModel.incrementCommentReaction(
+                    postId: postId,
+                    comment: comment,
+                    emoji: emoji,
+                    currentUserId: uid
+                )
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Text(emoji)
+                if count > 0 {
+                    Text("\(count)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
                 }
             }
-            .font(.body.weight(.semibold))
-            .disabled(!canPost)
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(Color.primary.opacity(0.06)))
         }
-        .padding(.top, 8)
-    }
-
-    private var reactionRowDetail: some View {
-        HStack(spacing: 12) {
-            ForEach(Array(livePost.reactions.keys.sorted()), id: \.self) { key in
-                Button {
-                    guard let uid else { return }
-                    Task { @MainActor in
-                        do {
-                            try await firestore.applyReaction(postId: livePost.id, userId: uid, emoji: key)
-                        } catch {
-                            print("❌ Reaction failed: \(error.localizedDescription)")
-                            presentAlert(error.localizedDescription)
-                            firestore.clearErrorMessage()
-                        }
-                    }
-                } label: {
-                    Text("\(key) \(livePost.reactions[key, default: 0])")
-                        .font(.subheadline.weight(.medium))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(
-                            Capsule()
-                                .fill(livePost.reactionForCurrentUser(uid) == key ? Color.accentColor.opacity(0.22) : Color.orange.opacity(0.12))
-                        )
-                        .overlay(
-                            Capsule()
-                                .stroke(livePost.reactionForCurrentUser(uid) == key ? Color.accentColor : Color.clear, lineWidth: 1.5)
-                        )
-                }
-                .buttonStyle(.borderless)
-                .disabled(uid == nil)
-                .scaleEffect(livePost.reactionForCurrentUser(uid) == key ? 1.05 : 1.0)
-                .animation(.spring(response: 0.32, dampingFraction: 0.68), value: livePost.reactionForCurrentUser(uid))
-            }
-        }
+        .buttonStyle(.borderless)
+        .disabled(currentUserId == nil)
     }
 }

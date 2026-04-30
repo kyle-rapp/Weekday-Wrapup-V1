@@ -1,0 +1,47 @@
+rules_version = '2';
+// Deploy with: firebase deploy --only firestore:rules
+// Adjust for your product (e.g. friends-only feed, admin roles).
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    match /posts/{postId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.authorId == request.auth.uid;
+      allow update: if signedIn();
+      allow delete: if signedIn() && resource.data.authorId == request.auth.uid;
+
+      match /comments/{commentId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.keys().hasAll(['userId', 'userName', 'text', 'createdAt']);
+        allow update: if signedIn();
+        allow delete: if signedIn() && resource.data.userId == request.auth.uid;
+      }
+    }
+
+    match /groups/{groupId} {
+      allow read: if signedIn()
+        && request.auth.uid in resource.data.memberIds;
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update: if signedIn()
+        && request.auth.uid == resource.data.ownerId;
+      allow delete: if signedIn()
+        && request.auth.uid == resource.data.ownerId;
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow write: if signedIn() && request.auth.uid == userId;
+    }
+  }
+}

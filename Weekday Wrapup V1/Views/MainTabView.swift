@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// FILE: Views/MainTabView.swift
 /// Root tab shell: Feed (single `NavigationStack`), Share, Learn. Owns `FeedViewModel` for feed navigation.
@@ -38,9 +39,20 @@ struct MainTabView: View {
                     Label("Learn", systemImage: "book.fill")
                 }
                 .tag(MainAppTab.learn)
+
+                NavigationStack {
+                    GrowView()
+                }
+                .tabItem {
+                    Label("Grow", systemImage: "chart.line.uptrend.xyaxis")
+                }
+                .tag(MainAppTab.grow)
             }
             .environmentObject(tabRouter)
             .environmentObject(feedViewModel)
+            .onChange(of: tabRouter.selectedTab) { _, _ in
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            }
 
             if tabRouter.postedToastVisible {
                 Text("Posted to Feed ✅")
@@ -61,5 +73,35 @@ struct MainTabView: View {
             }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: tabRouter.postedToastVisible)
+        .sheet(isPresented: $tabRouter.showPostCheckInReflection) {
+            PostCheckInReflectionSheet()
+                .environmentObject(tabRouter)
+        }
+    }
+}
+
+// MARK: - Post check-in reflection
+
+private struct PostCheckInReflectionSheet: View {
+    @EnvironmentObject private var tabRouter: TabRouter
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Text("How do you feel now?")
+                .font(.title2.bold())
+
+            Button("Better") {
+                tabRouter.dismissPostCheckInReflection()
+            }
+
+            Button("Same") {
+                tabRouter.dismissPostCheckInReflection()
+            }
+
+            Button("Worse") {
+                tabRouter.dismissPostCheckInReflection()
+            }
+        }
+        .padding()
     }
 }
