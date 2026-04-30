@@ -176,11 +176,15 @@ final class FirestoreManager: ObservableObject {
                     let invited = data["invitedContacts"] as? [String]
                     let allowHistory = data["allowHistoryAccessForNewMembers"] as? Bool
                     let desc = data["description"] as? String
+                    let adminIds = data["adminIds"] as? [String]
+                    let createdAt = (data["createdAt"] as? Timestamp)?.dateValue()
                     return SocialGroup(
                         id: doc.documentID,
                         name: name,
                         memberIds: memberIds,
                         createdBy: owner,
+                        adminIds: adminIds ?? [owner],
+                        createdAt: createdAt,
                         invitedContacts: invited,
                         allowHistoryAccessForNewMembers: allowHistory,
                         description: desc
@@ -228,6 +232,7 @@ final class FirestoreManager: ObservableObject {
                 "memberIds": Array(members),
                 "ownerId": ownerId,
                 "createdBy": ownerId,
+                "adminIds": [ownerId],
                 "createdAt": FieldValue.serverTimestamp()
             ]
             if !trimmedDescription.isEmpty {
@@ -265,14 +270,85 @@ final class FirestoreManager: ObservableObject {
         let trimmedInvites = invitedContacts
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+        let rawAdmins = data["adminIds"] as? [String]
+        let resolvedAdmins = (rawAdmins?.isEmpty == false) ? rawAdmins! : [owner]
         let update: [String: Any] = [
             "memberIds": Array(members),
             "invitedContacts": trimmedInvites,
-            "allowHistoryAccessForNewMembers": allowHistoryAccessForNewMembers
+            "allowHistoryAccessForNewMembers": allowHistoryAccessForNewMembers,
+            "adminIds": resolvedAdmins
         ]
         try await runWrite(successLog: "Group updated") {
             try await ref.updateData(update)
         }
+    }
+
+    /// Adds a member by user id (owner or admin). Does not remove pending email/phone invites.
+    func addGroupMember(groupId: String, memberUserId: String, actingUserId: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: actingUserId)
+        let ref = db.collection("groups").document(groupId)
+        let snap = try await ref.getDocument()
+        guard let data = snap.data() else {
+            throw NSError(domain: "FirestoreManager", code: 404, userInfo: [NSLocalizedDescriptionKey: "Group not found"])
+        }
+        let owner = (data["ownerId"] as? String) ?? (data["createdBy"] as? String) ?? ""
+        let rawAdmins = data["adminIds"] as? [String]
+        let admins = (rawAdmins?.isEmpty == false) ? rawAdmins! : [owner]
+        guard owner == actingUserId || admins.contains(actingUserId) else {
+            throw NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "Only an admin can add members"])
+        }
+        var members = Set(data["memberIds"] as? [String] ?? [])
+        members.insert(owner)
+        members.insert(memberUserId)
+        try await runWrite(successLog: "Member added") {
+            try await ref.updateData(["memberIds": Array(members)])
+        }
+    }
+
+    /// Removes a member (owner or admin). Cannot remove owner.
+    func removeGroupMember(groupId: String, memberUserId: String, actingUserId: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: actingUserId)
+        let ref = db.collection("groups").document(groupId)
+        let snap = try await ref.getDocument()
+        guard let data = snap.data() else {
+            throw NSError(domain: "FirestoreManager", code: 404, userInfo: [NSLocalizedDescriptionKey: "Group not found"])
+        }
+        let owner = (data["ownerId"] as? String) ?? (data["createdBy"] as? String) ?? ""
+        let rawAdmins = data["adminIds"] as? [String]
+        let admins = (rawAdmins?.isEmpty == false) ? rawAdmins! : [owner]
+        guard owner == actingUserId || admins.contains(actingUserId) else {
+            throw NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "Only an admin can remove members"])
+        }
+        guard memberUserId != owner else {
+            throw NSError(domain: "FirestoreManager", code: 400, userInfo: [NSLocalizedDescriptionKey: "Cannot remove the group owner"])
+        }
+        var members = Set(data["memberIds"] as? [String] ?? [])
+        members.remove(memberUserId)
+        members.insert(owner)
+        try await runWrite(successLog: "Member removed") {
+            try await ref.updateData(["memberIds": Array(members)])
+        }
+    }
+
+    /// Best-effort: finds users whose `name` field matches exactly (case-sensitive as stored).
+    func lookupUserIdsByExactDisplayName(_ name: String) async -> [String] {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        #if DEBUG
+        if Self.isXcodePreview { return [] }
+        #endif
+        do {
+            let snap = try await db.collection("users").whereField("name", isEqualTo: trimmed).limit(to: 8).getDocuments()
+            return snap.documents.map(\.documentID)
+        } catch {
+            print("⚠️ lookupUserIdsByExactDisplayName: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    /// Posted wrapup for navigation from history (`CheckInData.id` is the post id).
+    func feedPost(byId id: String) -> FeedPost? {
+        posts.first { $0.id == id }
     }
 
     func stopPostsListener() {
@@ -331,12 +407,31 @@ final class FirestoreManager: ObservableObject {
                     return
                 }
                 guard let documents = snapshot?.documents else { return }
-                let flat = documents.compactMap { Comment(document: $0) }
-                let nested = Comment.nestedTree(from: flat)
                 Task { @MainActor in
+                    let nested = await self.mergedCommentTree(postId: postId, mainDocuments: documents)
                     self.detailComments = nested
                 }
             }
+    }
+
+    /// Merges top-level `comments` docs with `comments/{rootId}/replies` (new) plus legacy inline replies (`parentCommentId` on main docs).
+    private func mergedCommentTree(postId: String, mainDocuments: [QueryDocumentSnapshot]) async -> [Comment] {
+        var flat = mainDocuments.compactMap { Comment(document: $0) }
+        let roots = flat.filter { $0.parentCommentId == nil }
+        for root in roots {
+            let repliesRef = db.collection("posts").document(postId).collection("comments").document(root.id).collection("replies")
+            do {
+                let rs = try await repliesRef.order(by: "createdAt", descending: false).getDocuments()
+                for d in rs.documents {
+                    if let c = Comment(replyDocument: d, threadRootId: root.id, parentCommentId: root.id) {
+                        flat.append(c)
+                    }
+                }
+            } catch {
+                print("⚠️ replies subcollection: \(error.localizedDescription)")
+            }
+        }
+        return Comment.nestedTree(from: flat)
     }
 
     func stopCommentsListener() {
@@ -373,7 +468,7 @@ final class FirestoreManager: ObservableObject {
         }
     }
 
-    /// Reply under an existing comment (`parentCommentId`). Same subcollection, increments post `commentCount`.
+    /// Reply at `posts/{postId}/comments/{parentCommentId}/replies/{replyId}`; increments post `commentCount`.
     func addReplyComment(postId: String, parentCommentId: String, userId: String, userName: String, text: String) async throws {
         _ = try requireAuthUser(matchingExpectedUid: userId)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -384,32 +479,40 @@ final class FirestoreManager: ObservableObject {
         }
         try await runWrite(successLog: "Reply added") {
             let postRef = self.db.collection("posts").document(postId)
-            let commentRef = postRef.collection("comments").document()
+            let parentRef = postRef.collection("comments").document(parentCommentId)
+            let replyRef = parentRef.collection("replies").document()
             let batch = self.db.batch()
             batch.setData([
                 "userId": userId,
                 "userName": userName,
                 "text": trimmed,
-                "parentCommentId": parentCommentId,
                 "createdAt": FieldValue.serverTimestamp(),
                 "likeCount": 0,
                 "likedBy": [] as [String],
                 "reactions": [:] as [String: Any]
-            ], forDocument: commentRef)
+            ], forDocument: replyRef)
             batch.updateData(["commentCount": FieldValue.increment(Int64(1))], forDocument: postRef)
             try await batch.commit()
         }
     }
 
-    func toggleCommentLike(postId: String, commentId: String, userId: String) async throws {
+    func toggleCommentLike(postId: String, comment: Comment, userId: String) async throws {
         _ = try requireAuthUser(matchingExpectedUid: userId)
         try await runWrite(successLog: "Comment like updated") {
-            try await self.performToggleCommentLike(postId: postId, commentId: commentId, userId: userId)
+            try await self.performToggleCommentLike(postId: postId, comment: comment, userId: userId)
         }
     }
 
-    private func performToggleCommentLike(postId: String, commentId: String, userId: String) async throws {
-        let docRef = db.collection("posts").document(postId).collection("comments").document(commentId)
+    private func commentDocumentRef(postId: String, comment: Comment) -> DocumentReference {
+        let post = db.collection("posts").document(postId)
+        if let root = comment.threadRootId {
+            return post.collection("comments").document(root).collection("replies").document(comment.id)
+        }
+        return post.collection("comments").document(comment.id)
+    }
+
+    private func performToggleCommentLike(postId: String, comment: Comment, userId: String) async throws {
+        let docRef = commentDocumentRef(postId: postId, comment: comment)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             db.runTransaction({ transaction, errorPointer -> Any? in
                 do {
@@ -450,15 +553,15 @@ final class FirestoreManager: ObservableObject {
         }
     }
 
-    func incrementCommentReaction(postId: String, commentId: String, emoji: String, userId: String) async throws {
+    func incrementCommentReaction(postId: String, comment: Comment, emoji: String, userId: String) async throws {
         _ = try requireAuthUser(matchingExpectedUid: userId)
         try await runWrite(successLog: "Comment reaction updated") {
-            try await self.performIncrementCommentReaction(postId: postId, commentId: commentId, emoji: emoji)
+            try await self.performIncrementCommentReaction(postId: postId, comment: comment, emoji: emoji)
         }
     }
 
-    private func performIncrementCommentReaction(postId: String, commentId: String, emoji: String) async throws {
-        let docRef = db.collection("posts").document(postId).collection("comments").document(commentId)
+    private func performIncrementCommentReaction(postId: String, comment: Comment, emoji: String) async throws {
+        let docRef = commentDocumentRef(postId: postId, comment: comment)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             db.runTransaction({ transaction, errorPointer -> Any? in
                 do {
@@ -847,6 +950,32 @@ final class FirestoreManager: ObservableObject {
         try await runWrite(successLog: "User preferences saved") {
             let payload = try preferences.asFirestoreDictionary()
             try await self.userPreferencesProfileRef(userId: userId).setData(payload, merge: true)
+        }
+    }
+
+    // MARK: - User public profile (`users/{uid}/profile/main`)
+
+    private func userPublicProfileRef(userId: String) -> DocumentReference {
+        db.collection("users").document(userId).collection("profile").document("main")
+    }
+
+    func fetchUserProfile(userId: String) async -> UserProfile? {
+        if Self.isXcodePreview { return nil }
+        do {
+            let snap = try await userPublicProfileRef(userId: userId).getDocument()
+            guard snap.exists, let data = snap.data() else { return nil }
+            return try UserProfile.fromFirestoreDictionary(data)
+        } catch {
+            print("⚠️ fetchUserProfile: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    func saveUserProfile(_ profile: UserProfile, userId: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        try await runWrite(successLog: "User profile saved") {
+            let payload = try profile.asFirestoreDictionary()
+            try await self.userPublicProfileRef(userId: userId).setData(payload, merge: true)
         }
     }
 

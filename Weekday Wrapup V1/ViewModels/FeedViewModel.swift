@@ -45,7 +45,7 @@ final class FeedViewModel: ObservableObject {
         guard let currentUserId else { return }
         let addingLike = !comment.likedBy.contains(currentUserId)
         do {
-            try await firestore.toggleCommentLike(postId: postId, commentId: comment.id, userId: currentUserId)
+            try await firestore.toggleCommentLike(postId: postId, comment: comment, userId: currentUserId)
             if addingLike, comment.userId != currentUserId {
                 print("User liked your comment")
             }
@@ -69,7 +69,7 @@ final class FeedViewModel: ObservableObject {
         do {
             try await firestore.incrementCommentReaction(
                 postId: postId,
-                commentId: comment.id,
+                comment: comment,
                 emoji: emoji,
                 userId: currentUserId
             )

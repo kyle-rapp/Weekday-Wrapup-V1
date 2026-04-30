@@ -77,6 +77,18 @@ struct LearnView: View {
         )
     ]
 
+    private static func stepEmoji(for stepNumber: Int) -> String {
+        switch stepNumber {
+        case 1: return "🧠"
+        case 2: return "💛"
+        case 3: return "✨"
+        case 4: return "🌿"
+        case 5: return "🌙"
+        case 6: return "🚶"
+        default: return "✨"
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
@@ -303,7 +315,8 @@ struct LearnView: View {
                         number: step.number,
                         title: step.title,
                         description: step.description,
-                        systemImage: step.systemImage
+                        systemImage: step.systemImage,
+                        emoji: Self.stepEmoji(for: step.number)
                     )
                 }
             }
@@ -430,9 +443,24 @@ struct StepRowView: View {
     let title: String
     let description: String
     let systemImage: String
+    let emoji: String
+
+    @State private var animate = false
 
     private var resolvedIcon: String {
         UIImage(systemName: systemImage) != nil ? systemImage : "sparkles"
+    }
+
+    private var stepAccent: Color {
+        switch number {
+        case 1: return .blue
+        case 2: return .pink
+        case 3: return .purple
+        case 4: return .green
+        case 5: return .indigo
+        case 6: return .orange
+        default: return .blue
+        }
     }
 
     var body: some View {
@@ -452,11 +480,17 @@ struct StepRowView: View {
                 Spacer(minLength: 0)
             }
 
-            Image(systemName: resolvedIcon)
-                .font(.system(size: 28))
-                .foregroundStyle(AppTheme.colors.ocean)
-                .frame(height: 40)
-                .accessibilityLabel("Step icon")
+            HStack(spacing: 14) {
+                Image(systemName: resolvedIcon)
+                    .font(.system(size: 32))
+                    .foregroundStyle(stepAccent)
+                    .padding(12)
+                    .background(Circle().fill(stepAccent.opacity(0.12)))
+
+                Text(emoji)
+                    .font(.system(size: 28))
+                    .accessibilityHidden(true)
+            }
 
             Text(safeTitle)
                 .font(.headline)
@@ -472,9 +506,20 @@ struct StepRowView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(AppTheme.colors.background)
-                .shadow(color: AppTheme.colors.bark.opacity(0.12), radius: 4, x: 0, y: 2)
+                .fill(stepAccent.opacity(0.06))
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(stepAccent.opacity(0.15), lineWidth: 1)
+        )
+        .shadow(color: AppTheme.colors.bark.opacity(0.12), radius: 4, x: 0, y: 2)
+        .opacity(animate ? 1 : 0)
+        .offset(y: animate ? 0 : 10)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.45).delay(Double(number - 1) * 0.05)) {
+                animate = true
+            }
+        }
     }
 }
 
@@ -592,9 +637,9 @@ enum LearnEmotionDefinitionLookup {
         add("Joyful", "A bright, uplifted state—open to pleasure, play, or connection.")
         add("Powerful", "Feeling capable, grounded, or ready to take space when it matters.")
         add("Peaceful", "Soft steadiness; your body may feel slower and your mind quieter.")
-        add("Sad", "Often tied to loss or longing; a signal that something you care about feels out of reach.")
-        add("Mad", "Energy that says a boundary was crossed or a need wasn’t met.")
-        add("Scared", "Protection mode—narrowed focus and heightened alert to stay safe.")
+        add("Sad", "Sadness often follows loss, disappointment, or unmet needs. It can slow you down and draw your attention to what matters.")
+        add("Mad", "Mad (anger) is a response to perceived injustice, threat, or frustration. It often signals that something feels unfair or blocked.")
+        add("Scared", "Fear is an alarm system. It narrows attention and prepares your body to respond when something feels uncertain or unsafe.")
 
         let pairs: [(String, String)] = [
             ("excited", "High energy and anticipation—something ahead feels meaningful."),
@@ -615,16 +660,16 @@ enum LearnEmotionDefinitionLookup {
             ("loving", "Warm care toward yourself or others."),
             ("trusting", "Letting guard soften because safety feels plausible."),
             ("nurturing", "Instinct to care, soothe, or protect."),
-            ("lonely", "Aching for connection that isn’t quite there."),
+            ("lonely", "A painful sense of disconnection—a signal that belonging or closeness feels missing."),
             ("bored", "Under-stimulated; energy looking for a place to go."),
             ("tired", "Body or mind asking for rest, not more pushing."),
-            ("depressed", "Heavy, slowed mood that may need gentle support."),
-            ("ashamed", "Fear that a flaw defines you; very human, very workable."),
-            ("guilty", "Signal that behavior strayed from your values—repair may help."),
-            ("hurt", "An emotional bruise—something mattered and it stung."),
-            ("hostile", "Sharp, outward-facing anger; protective but costly if stuck."),
-            ("angry", "Clear signal that something feels unfair or blocked."),
-            ("frustrated", "Blocked goals—almost there, but friction is high."),
+            ("depressed", "Depression is more than sadness: it often includes low energy, loss of interest, and feeling stuck. Professional support can help."),
+            ("ashamed", "Shame is the feeling that you are fundamentally flawed; it’s painful and common—and it can soften with safe support."),
+            ("guilty", "Guilt usually points to a specific behavior that conflicts with your values; it can motivate repair."),
+            ("hurt", "Hurt means something mattered and you felt wounded by it—emotionally or socially."),
+            ("hostile", "Hostile anger is outward-facing and protective; it can signal boundaries or pain that need attention."),
+            ("angry", "Anger is a cue that something feels wrong, blocked, or unfair to you."),
+            ("frustrated", "Frustration is tension when progress is blocked or effort doesn’t match the outcome you want."),
             ("selfish", "A harsh label for normal self-protection; worth reframing with curiosity."),
             ("hateful", "Intense aversion; often pain pointed outward—support can help."),
             ("critical", "Hyper-vigilant scanning for what could go wrong."),
@@ -632,7 +677,11 @@ enum LearnEmotionDefinitionLookup {
             ("rejected", "Not chosen or included in a way that stings."),
             ("helpless", "Unsure what would help; motivation may dip."),
             ("submissive", "Going small to stay safe—sometimes adaptive, sometimes costly."),
-            ("insecure", "Uncertainty about worth or belonging in this context.")
+            ("insecure", "Uncertainty about worth or belonging in this context."),
+            ("anxious", "Anxiety is worry about the future paired with bodily tension; it often shows up when your brain predicts threat or uncertainty."),
+            ("worried", "Worry is repetitive mental rehearsal of problems—often trying to prepare you, even when it exhausts you."),
+            ("nervous", "Nervousness is activation before a challenge; it can sharpen focus or feel uncomfortable in the body."),
+            ("anxiety", "Anxiety is worry about the future paired with bodily tension; it often shows up when your brain predicts threat or uncertainty.")
         ]
         for (k, v) in pairs { add(k, v) }
         return m

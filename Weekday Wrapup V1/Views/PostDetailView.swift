@@ -25,6 +25,15 @@ struct PostDetailView: View {
         firestore.isFollowing(livePost.authorId)
     }
 
+    private var suggestedResources: [ResourceLink] {
+        CuratedResourceLibrary.suggestions(
+            insight: livePost.insight,
+            goal: livePost.goal,
+            whoop: livePost.whoop,
+            emotions: livePost.selectedEmotions
+        )
+    }
+
     var body: some View {
         ZStack {
             ScrollView {
@@ -72,6 +81,31 @@ struct PostDetailView: View {
                     if !livePost.goal.isEmpty {
                         Text("Weekly goal: \(livePost.goal)")
                             .foregroundStyle(.blue)
+                    }
+
+                    if !suggestedResources.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Resources that may fit")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            ForEach(suggestedResources) { link in
+                                if let url = URL(string: link.url),
+                                   let scheme = url.scheme?.lowercased(),
+                                   scheme == "http" || scheme == "https" {
+                                    Link(destination: url) {
+                                        HStack {
+                                            Text(link.title)
+                                                .font(.subheadline.weight(.semibold))
+                                                .multilineTextAlignment(.leading)
+                                            Spacer()
+                                            Image(systemName: "arrow.up.right.square")
+                                        }
+                                    }
+                                    .padding(12)
+                                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.blue.opacity(0.08)))
+                                }
+                            }
+                        }
                     }
 
                     FeedReactionRow(
@@ -187,8 +221,15 @@ struct PostDetailView: View {
                 .frame(width: 56, height: 56)
                 .foregroundStyle(.orange.opacity(0.88))
             VStack(alignment: .leading, spacing: 6) {
-                Text(livePost.user.name)
-                    .font(.title2.bold())
+                NavigationLink {
+                    ProfileView(userId: livePost.authorId, contextPost: livePost)
+                        .environmentObject(firestore)
+                        .environmentObject(auth)
+                } label: {
+                    Text(livePost.user.name)
+                        .font(.title2.bold())
+                }
+                .buttonStyle(.plain)
                 Text("🔥 \(livePost.user.streak) week streak")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)

@@ -2,7 +2,8 @@ import Foundation
 import FirebaseFirestore
 
 /// FILE: Models/Comment.swift
-/// Maps `posts/{postId}/comments/{commentId}` documents (top-level + replies via `parentCommentId`).
+/// Maps `posts/{postId}/comments/{commentId}` (top-level + legacy inline replies via `parentCommentId`)
+/// and `posts/{postId}/comments/{rootId}/replies/{replyId}` (new replies).
 
 struct Comment: Identifiable, Equatable, Hashable {
     let id: String
@@ -12,6 +13,8 @@ struct Comment: Identifiable, Equatable, Hashable {
     let createdAt: Date?
     /// When set, this row is a reply nested under the parent comment in UI.
     let parentCommentId: String?
+    /// When set, Firestore document lives under `comments/{threadRootId}/replies/{id}`.
+    let threadRootId: String?
     var likes: Int
     var likedBy: Set<String>
     /// Quick emoji tallies (e.g. "❤️": 3); keys are literal emoji strings.
@@ -26,6 +29,7 @@ struct Comment: Identifiable, Equatable, Hashable {
         text: String,
         createdAt: Date? = nil,
         parentCommentId: String? = nil,
+        threadRootId: String? = nil,
         likes: Int = 0,
         likedBy: Set<String> = [],
         reactions: [String: Int] = [:],
@@ -37,6 +41,7 @@ struct Comment: Identifiable, Equatable, Hashable {
         self.text = text
         self.createdAt = createdAt
         self.parentCommentId = parentCommentId
+        self.threadRootId = threadRootId
         self.likes = likes
         self.likedBy = likedBy
         self.reactions = reactions
@@ -59,6 +64,30 @@ struct Comment: Identifiable, Equatable, Hashable {
         self.text = text
         self.createdAt = createdAt
         self.parentCommentId = parentCommentId
+        self.threadRootId = nil
+        self.likes = likes
+        self.likedBy = Set(likedArray)
+        self.reactions = reactionsMap
+        self.replies = []
+    }
+
+    /// Reply document under `comments/{threadRootId}/replies/{docId}`.
+    init?(replyDocument: DocumentSnapshot, threadRootId: String, parentCommentId: String) {
+        guard let data = replyDocument.data() else { return nil }
+        guard let userId = data["userId"] as? String,
+              let userName = data["userName"] as? String,
+              let text = data["text"] as? String else { return nil }
+        let createdAt = (data["createdAt"] as? Timestamp)?.dateValue()
+        let likes = Comment.intFromFirestore(data["likeCount"])
+        let likedArray = data["likedBy"] as? [String] ?? []
+        let reactionsMap = Self.reactionsFromFirestore(data["reactions"] as? [String: Any])
+        self.id = replyDocument.documentID
+        self.userId = userId
+        self.userName = userName
+        self.text = text
+        self.createdAt = createdAt
+        self.parentCommentId = parentCommentId
+        self.threadRootId = threadRootId
         self.likes = likes
         self.likedBy = Set(likedArray)
         self.reactions = reactionsMap

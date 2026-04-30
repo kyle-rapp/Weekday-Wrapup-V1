@@ -6,6 +6,10 @@ import SwiftUI
 struct HistoryView: View {
     let entries: [CheckInData]
 
+    @EnvironmentObject private var firestore: FirestoreManager
+    @EnvironmentObject private var auth: AuthManager
+    @EnvironmentObject private var feedViewModel: FeedViewModel
+
     var body: some View {
         Group {
             if entries.isEmpty {
@@ -16,21 +20,19 @@ struct HistoryView: View {
                 )
             } else {
                 List(entries) { entry in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Week \(entry.weekNumber)")
-                            .font(.headline)
-                            .foregroundStyle(AppTheme.colors.textPrimary)
-                        Text(entry.selectedEmotions.sorted().joined(separator: ", "))
-                            .font(.subheadline)
-                            .foregroundStyle(AppTheme.colors.textSecondary)
-                        if !entry.emotionalInsight.isEmpty {
-                            Text(entry.emotionalInsight)
-                                .font(.caption)
-                                .foregroundStyle(AppTheme.colors.textSecondary)
-                                .lineLimit(2)
+                    if let post = firestore.feedPost(byId: entry.id) {
+                        NavigationLink {
+                            PostDetailView(post: post)
+                                .environmentObject(firestore)
+                                .environmentObject(auth)
+                                .environmentObject(feedViewModel)
+                        } label: {
+                            PastWrapupRow(entry: entry)
                         }
+                    } else {
+                        PastWrapupRow(entry: entry)
+                            .foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, 4)
                 }
                 .listStyle(.plain)
             }
@@ -38,6 +40,30 @@ struct HistoryView: View {
         .navigationTitle("Past weeks")
         .navigationBarTitleDisplayMode(.inline)
         .background(AppTheme.colors.secondaryBackground.ignoresSafeArea())
+    }
+}
+
+// MARK: - Row
+
+private struct PastWrapupRow: View {
+    let entry: CheckInData
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Week \(entry.weekNumber)")
+                .font(.headline)
+                .foregroundStyle(AppTheme.colors.textPrimary)
+            Text(entry.selectedEmotions.sorted().joined(separator: ", "))
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.colors.textSecondary)
+            if !entry.emotionalInsight.isEmpty {
+                Text(entry.emotionalInsight)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.colors.textSecondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
 
@@ -60,6 +86,9 @@ struct HistoryView: View {
                 selectedEmotionsOrdered: ["Peaceful", "Hopeful"]
             )
         ])
+        .environmentObject(FirestoreManager.shared)
+        .environmentObject(AuthManager(previewLoggedIn: true, previewUser: PreviewSampleData.currentUser))
+        .environmentObject(FeedViewModel())
     }
 }
 #endif

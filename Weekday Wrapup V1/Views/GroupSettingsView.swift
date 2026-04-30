@@ -13,6 +13,8 @@ struct GroupSettingsView: View {
     @State private var memberIds: [String]
     @State private var pendingInvites: [String]
     @State private var inviteInput = ""
+    @State private var usernameLookup = ""
+    @State private var usernameLookupHint: String?
     @State private var allowHistory: Bool
     @State private var isSaving = false
     @State private var errorText: String?
@@ -50,8 +52,11 @@ struct GroupSettingsView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Invite people")
                             .font(.headline)
+                        Text("Email, phone, or exact display name as saved in their profile.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         HStack {
-                            TextField("Enter email or phone", text: $inviteInput)
+                            TextField("Email or phone", text: $inviteInput)
                                 .textFieldStyle(.roundedBorder)
                                 .keyboardType(.emailAddress)
                                 .textInputAutocapitalization(.never)
@@ -59,6 +64,20 @@ struct GroupSettingsView: View {
                                 addInvite()
                             }
                             .font(.body.weight(.semibold))
+                        }
+                        HStack {
+                            TextField("Username (exact name)", text: $usernameLookup)
+                                .textFieldStyle(.roundedBorder)
+                                .textInputAutocapitalization(.never)
+                            Button("Find") {
+                                Task { await findAndAddMemberByName() }
+                            }
+                            .font(.body.weight(.semibold))
+                        }
+                        if let usernameLookupHint {
+                            Text(usernameLookupHint)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                         ForEach(pendingInvites, id: \.self) { invite in
                             HStack {
@@ -84,9 +103,7 @@ struct GroupSettingsView: View {
                             Spacer()
                             if uid != ownerId {
                                 Button("Remove") {
-                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                                        memberIds.removeAll { $0 == uid }
-                                    }
+                                    Task { await removeMember(uid) }
                                 }
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.red)
@@ -150,6 +167,58 @@ struct GroupSettingsView: View {
         withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
             pendingInvites.append(t)
             inviteInput = ""
+        }
+    }
+
+    private func findAndAddMemberByName() async {
+        usernameLookupHint = nil
+        let q = usernameLookup.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return }
+        guard let uid = auth.currentUser?.id else { return }
+        let ids = await firestore.lookupUserIdsByExactDisplayName(q)
+        await MainActor.run {
+            if ids.isEmpty {
+                usernameLookupHint = "No profile found with that exact name."
+            } else if ids.count > 1 {
+                usernameLookupHint = "Multiple matches—ask your friend to confirm their profile name."
+            } else if let newId = ids.first {
+                if memberIds.contains(newId) {
+                    usernameLookupHint = "That person is already a member."
+                } else {
+                    usernameLookup = ""
+                    Task {
+                        do {
+                            try await firestore.addGroupMember(groupId: group.id, memberUserId: newId, actingUserId: uid)
+                            await MainActor.run {
+                                if !memberIds.contains(newId) {
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                                        memberIds.append(newId)
+                                    }
+                                }
+                                usernameLookupHint = "Added to the group."
+                            }
+                        } catch {
+                            await MainActor.run {
+                                usernameLookupHint = error.localizedDescription
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func removeMember(_ memberUserId: String) async {
+        guard let uid = auth.currentUser?.id else { return }
+        do {
+            try await firestore.removeGroupMember(groupId: group.id, memberUserId: memberUserId, actingUserId: uid)
+            await MainActor.run {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                    memberIds.removeAll { $0 == memberUserId }
+                }
+            }
+        } catch {
+            await MainActor.run { errorText = error.localizedDescription }
         }
     }
 

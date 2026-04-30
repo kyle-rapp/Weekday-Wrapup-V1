@@ -1,6 +1,5 @@
 rules_version = '2';
 // Deploy with: firebase deploy --only firestore:rules
-// Adjust for your product (e.g. friends-only feed, admin roles).
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -24,6 +23,15 @@ service cloud.firestore {
           && request.resource.data.keys().hasAll(['userId', 'userName', 'text', 'createdAt']);
         allow update: if signedIn();
         allow delete: if signedIn() && resource.data.userId == request.auth.uid;
+
+        match /replies/{replyId} {
+          allow read: if signedIn();
+          allow create: if signedIn()
+            && request.resource.data.userId == request.auth.uid
+            && request.resource.data.keys().hasAll(['userId', 'userName', 'text', 'createdAt']);
+          allow update: if signedIn();
+          allow delete: if signedIn() && resource.data.userId == request.auth.uid;
+        }
       }
     }
 
@@ -34,7 +42,13 @@ service cloud.firestore {
         && request.resource.data.ownerId == request.auth.uid
         && request.resource.data.createdBy == request.auth.uid;
       allow update: if signedIn()
-        && request.auth.uid == resource.data.ownerId;
+        && (
+          request.auth.uid == resource.data.ownerId
+          || (
+            resource.data.keys().hasAny(['adminIds'])
+            && request.auth.uid in resource.data.adminIds
+          )
+        );
       allow delete: if signedIn()
         && request.auth.uid == resource.data.ownerId;
     }
@@ -42,6 +56,21 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if signedIn();
       allow write: if signedIn() && request.auth.uid == userId;
+
+      match /profile/{docId} {
+        allow read: if signedIn();
+        allow write: if signedIn() && request.auth.uid == userId;
+      }
+
+      match /preferences/{docId} {
+        allow read: if signedIn();
+        allow write: if signedIn() && request.auth.uid == userId;
+      }
+
+      match /recommendationFeedback/{docId} {
+        allow read: if signedIn() && request.auth.uid == userId;
+        allow create: if signedIn() && request.auth.uid == userId;
+      }
     }
   }
 }

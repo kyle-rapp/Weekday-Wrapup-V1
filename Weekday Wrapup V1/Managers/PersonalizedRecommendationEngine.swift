@@ -1,8 +1,8 @@
 import Foundation
 
 /// FILE: Managers/PersonalizedRecommendationEngine.swift
-/// v1 rule-based personalized recommendations (preferences + helpful-tag history + intensity + weather).
-/// Returns 2–3 items, ranked. No Firestore reads inside — caller passes data.
+/// v2 weighted scoring: emotion / tags / preferences / helpful-tag history + intensity + weather.
+/// Returns 2–3 items, ranked.
 
 final class PersonalizedRecommendationEngine {
 
@@ -11,7 +11,7 @@ final class PersonalizedRecommendationEngine {
         let rec: Recommendation
     }
 
-    /// Primary entry: derives dominant emotion / intensity / helpful tags from `history` when needed.
+    /// `score = emotionMatch*3 + tagMatch*5 + preferenceMatch*4 + historyMatch*6` per candidate (weights are small integers 0–3).
     func generate(
         emotion: String,
         intensity: Int,
@@ -27,18 +27,39 @@ final class PersonalizedRecommendationEngine {
 
         var pool: [Candidate] = []
 
-        func add(_ title: String, _ reason: String, _ action: String, _ type: RecommendationType, base: Int) {
-            pool.append(Candidate(score: base, rec: Recommendation(title: title, reason: reason, action: action, type: type)))
+        func add(
+            _ title: String,
+            _ reason: String,
+            _ action: String,
+            _ type: RecommendationType,
+            emotionMatch: Int,
+            tagMatch: Int,
+            preferenceMatch: Int,
+            historyMatch: Int
+        ) {
+            let em = min(3, max(0, emotionMatch))
+            let tm = min(3, max(0, tagMatch))
+            let pm = min(3, max(0, preferenceMatch))
+            let hm = min(3, max(0, historyMatch))
+            let score = em * 3 + tm * 5 + pm * 4 + hm * 6
+            pool.append(Candidate(score: score, rec: Recommendation(title: title, reason: reason, action: action, type: type)))
         }
 
-        // --- Weather layer (gentle, only when relevant) ---
+        func emotionTier(for keywords: [String]) -> Int {
+            keywords.contains { e.contains($0) } ? 2 : 0
+        }
+
+        // --- Weather ---
         if weather == .sunny, preferences?.enjoysWalking == true, level <= 7 {
             add(
                 "Take a 10-minute walk outside",
                 "It’s nice out—and moving helps many people land back in their bodies.",
                 "Start",
                 .action,
-                base: 6
+                emotionMatch: 0,
+                tagMatch: 0,
+                preferenceMatch: 2,
+                historyMatch: 0
             )
         }
         if weather == .rainy, level <= 7 {
@@ -47,11 +68,14 @@ final class PersonalizedRecommendationEngine {
                 "Rainy days pair well with a slower pace—small comforts can still shift your state.",
                 "Try it",
                 .regulation,
-                base: 4
+                emotionMatch: 0,
+                tagMatch: 0,
+                preferenceMatch: 1,
+                historyMatch: 0
             )
         }
 
-        // --- History: “what helped” for similar moods ---
+        // --- History: helpful tags for similar moods ---
         if let top = mergedTags.max(by: { $0.value < $1.value }), top.value >= 2 {
             let label = top.key
             let reason = "When you’ve felt similar before, \(label.lowercased()) showed up in what helped—worth another try."
@@ -60,18 +84,24 @@ final class PersonalizedRecommendationEngine {
                 reason,
                 "Start",
                 .action,
-                base: 8 + min(4, top.value)
+                emotionMatch: 1,
+                tagMatch: min(3, top.value / 2),
+                preferenceMatch: 0,
+                historyMatch: min(3, top.value)
             )
         }
 
-        // --- Preference-tuned (only when user opted in) ---
+        // --- Preferences ---
         if preferences?.journals == true, level <= 8 {
             add(
                 "Three-line journal",
                 "You’ve shared that writing helps—keep it tiny so it feels doable.",
                 "Open notes",
                 .reflection,
-                base: 5
+                emotionMatch: 0,
+                tagMatch: 0,
+                preferenceMatch: 2,
+                historyMatch: 0
             )
         }
         if preferences?.meditates == true, level >= 5 {
@@ -80,7 +110,10 @@ final class PersonalizedRecommendationEngine {
                 "You’ve indicated meditation fits you—short beats perfect when intensity is up.",
                 "Breathe",
                 .regulation,
-                base: 5
+                emotionMatch: 1,
+                tagMatch: 0,
+                preferenceMatch: 2,
+                historyMatch: 0
             )
         }
         if preferences?.callsFriends == true, level <= 8 {
@@ -89,7 +122,10 @@ final class PersonalizedRecommendationEngine {
                 "Connection is in your toolkit—one message can soften the day without pressure.",
                 "Reach out",
                 .connection,
-                base: 5
+                emotionMatch: 1,
+                tagMatch: 0,
+                preferenceMatch: 2,
+                historyMatch: 0
             )
         }
         if preferences?.hasPet == true, level <= 8 {
@@ -98,7 +134,10 @@ final class PersonalizedRecommendationEngine {
                 "Movement plus companionship can be a steady reset when emotions run high.",
                 "Go",
                 .action,
-                base: 5
+                emotionMatch: 0,
+                tagMatch: 0,
+                preferenceMatch: 2,
+                historyMatch: 0
             )
         }
         if preferences?.enjoysWalking == true, weather != .rainy, level <= 7 {
@@ -107,34 +146,40 @@ final class PersonalizedRecommendationEngine {
                 "Walking is something you’ve marked as helpful—keep the bar low.",
                 "Step out",
                 .action,
-                base: 4
+                emotionMatch: 0,
+                tagMatch: 0,
+                preferenceMatch: 2,
+                historyMatch: 0
             )
         }
 
-        // --- Emotion bases (intensity-aware) ---
+        // --- Emotion bases ---
         if e.contains("angry") || e.contains("mad") || e.contains("frustrated") {
+            let tier = emotionTier(for: ["angry", "mad", "frustrated"])
             if level <= 4 {
-                add("Change rooms for two minutes", "Small spatial shifts can interrupt the heat of frustration.", "Move", .regulation, base: 6)
+                add("Change rooms for two minutes", "Small spatial shifts can interrupt the heat of frustration.", "Move", .regulation, emotionMatch: tier, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
             } else if level <= 7 {
-                add("Push pause before you respond", "Anger often wants speed—space protects what you care about.", "Wait", .reflection, base: 7)
+                add("Push pause before you respond", "Anger often wants speed—space protects what you care about.", "Wait", .reflection, emotionMatch: tier, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
             } else {
-                add("Box breathing, four counts", "At high intensity, simple breath pacing is a reliable regulator.", "Breathe", .regulation, base: 8)
+                add("Box breathing, four counts", "At high intensity, simple breath pacing is a reliable regulator.", "Breathe", .regulation, emotionMatch: tier, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
             }
         } else if e.contains("sad") || e.contains("hurt") || e.contains("lonely") {
+            let tier = emotionTier(for: ["sad", "hurt", "lonely"])
             if level <= 4 {
-                add("Warm drink + one window of light", "Low intensity sadness often softens with tiny sensory care.", "Rest", .regulation, base: 6)
+                add("Warm drink + one window of light", "Low intensity sadness often softens with tiny sensory care.", "Rest", .regulation, emotionMatch: tier, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
             } else if level <= 7 {
-                add("Name one person who gets you", "Connection doesn’t have to be a big conversation—just a thread.", "Think", .connection, base: 7)
+                add("Name one person who gets you", "Connection doesn’t have to be a big conversation—just a thread.", "Think", .connection, emotionMatch: tier, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
             } else {
-                add("Ground with 5-4-3-2-1", "When sadness feels heavy, sensory grounding can steady the body.", "Ground", .regulation, base: 8)
+                add("Ground with 5-4-3-2-1", "When sadness feels heavy, sensory grounding can steady the body.", "Ground", .regulation, emotionMatch: tier, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
             }
         } else if e.contains("anxious") || e.contains("worried") || e.contains("nervous") || e.contains("scared") {
+            let tier = emotionTier(for: ["anxious", "worried", "nervous", "scared"])
             if level <= 4 {
-                add("Label the worry in one sentence", "Naming tightens the loop—keep it short and kind.", "Write", .reflection, base: 6)
+                add("Label the worry in one sentence", "Naming tightens the loop—keep it short and kind.", "Write", .reflection, emotionMatch: tier, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
             } else if level <= 7 {
-                add("Slow exhale, twice as long as inhale", "Longer exhales nudge your nervous system toward calm.", "Breathe", .regulation, base: 7)
+                add("Slow exhale, twice as long as inhale", "Longer exhales nudge your nervous system toward calm.", "Breathe", .regulation, emotionMatch: tier, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
             } else {
-                add("Feet on the floor, press gently", "High anxiety benefits from concrete body anchors.", "Ground", .regulation, base: 8)
+                add("Feet on the floor, press gently", "High anxiety benefits from concrete body anchors.", "Ground", .regulation, emotionMatch: tier, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
             }
         } else if e.contains("peace") || e.contains("calm") || e.contains("content") || e.contains("happy") || e.contains("joy") {
             add(
@@ -142,27 +187,28 @@ final class PersonalizedRecommendationEngine {
                 "You’re in a steadier window—notice what you did today that you can repeat tomorrow.",
                 "Note it",
                 .reflection,
-                base: 5
+                emotionMatch: 2,
+                tagMatch: 0,
+                preferenceMatch: 0,
+                historyMatch: 0
             )
         }
 
-        // --- Safe defaults (always allowed, lower priority unless pool thin) ---
-        add("Box breathing, one round", "Breathing stays available even when you don’t have data yet.", "Breathe", .regulation, base: 2)
-        add("One-page brain dump", "Journaling is a gentle default that still respects your pace.", "Write", .reflection, base: 2)
+        // --- Safe defaults ---
+        add("Box breathing, one round", "Breathing stays available even when you don’t have data yet.", "Breathe", .regulation, emotionMatch: 0, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
+        add("One-page brain dump", "Journaling is a gentle default that still respects your pace.", "Write", .reflection, emotionMatch: 0, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
         if weather != .rainy {
-            add("Five-minute walk", "A short walk is one of the most repeatable resets.", "Walk", .action, base: 2)
+            add("Five-minute walk", "A short walk is one of the most repeatable resets.", "Walk", .action, emotionMatch: 0, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
         }
 
-        // --- Intensity gates: soften walk “action” pushes when very high unless well-supported ---
         let gated = pool.filter { cand in
             guard level >= 8 else { return true }
             if cand.rec.type == .action, cand.rec.title.lowercased().contains("walk") {
-                return cand.score >= 9 || weather == .sunny || preferences?.enjoysWalking == true
+                return cand.score >= 18 || weather == .sunny || preferences?.enjoysWalking == true
             }
             return true
         }
 
-        // Dedup titles (keep highest score)
         var bestByTitle: [String: Candidate] = [:]
         for c in gated {
             let key = c.rec.title.lowercased()
@@ -191,8 +237,6 @@ final class PersonalizedRecommendationEngine {
         return Array(out.prefix(3))
     }
 
-    // MARK: - History helpers
-
     private static func mergeTagSignals(explicit: [String], fromHistory: [String: Int]) -> [String: Int] {
         var out = fromHistory
         for t in explicit {
@@ -203,7 +247,6 @@ final class PersonalizedRecommendationEngine {
         return out
     }
 
-    /// Tags from check-ins whose emotions overlap the current mood keywords.
     private static func helpfulTagCountsForSimilarMood(history: [CheckInData], emotionHint: String) -> [String: Int] {
         let hint = emotionHint.lowercased()
         let keywords: [String] = {
@@ -238,7 +281,6 @@ final class PersonalizedRecommendationEngine {
 }
 
 extension PersonalizedRecommendationEngine {
-    /// Derives primary mood line, typical intensity, and latest helpful tags from wrapup history.
     static func moodContext(from history: [CheckInData]) -> (emotion: String, intensity: Int, tags: [String]) {
         guard !history.isEmpty else { return ("", 5, []) }
         let sorted = history.sorted { $0.date < $1.date }

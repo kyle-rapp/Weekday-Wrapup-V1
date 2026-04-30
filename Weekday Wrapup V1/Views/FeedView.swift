@@ -196,9 +196,16 @@ struct FeedPostCard: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(livePost.user.name)
-                            .font(.headline)
-                            .foregroundStyle(.primary)
+                        NavigationLink {
+                            ProfileView(userId: livePost.authorId, contextPost: livePost)
+                                .environmentObject(firestore)
+                                .environmentObject(auth)
+                        } label: {
+                            Text(livePost.user.name)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                        }
+                        .buttonStyle(.plain)
                         Spacer(minLength: 8)
                         if let uid, uid != livePost.authorId {
                             Button {
