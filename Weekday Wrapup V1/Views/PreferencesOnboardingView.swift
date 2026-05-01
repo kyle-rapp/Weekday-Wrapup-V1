@@ -29,6 +29,8 @@ struct PreferencesOnboardingView: View {
     // Step 3 — optional
     @State private var pronouns = ""
     @State private var relationshipStatus = ""
+    @State private var favoriteSong = ""
+    @State private var favoriteArtist = ""
     @State private var hasPet = false
     @State private var drinksAlcohol: Bool?
     @State private var isSaving = false
@@ -201,6 +203,10 @@ struct PreferencesOnboardingView: View {
 
     private var stepOptional: some View {
         Form {
+            Section("Music") {
+                TextField("Favorite song right now", text: $favoriteSong)
+                TextField("Artist (optional)", text: $favoriteArtist)
+            }
             Section("Pronouns") {
                 TextField("e.g. they/them", text: $pronouns)
             }
@@ -298,6 +304,15 @@ struct PreferencesOnboardingView: View {
         let prefs = buildPreferences()
         do {
             try await firestore.saveUserPreferences(prefs, userId: uid)
+            let songTrim = favoriteSong.trimmingCharacters(in: .whitespacesAndNewlines)
+            let artistTrim = favoriteArtist.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !songTrim.isEmpty || !artistTrim.isEmpty {
+                var profile = await firestore.fetchUserProfile(userId: uid)
+                    ?? UserProfile(name: auth.currentUser?.name ?? "Member")
+                if !songTrim.isEmpty { profile.favoriteSong = songTrim }
+                if !artistTrim.isEmpty { profile.favoriteArtist = artistTrim }
+                try await firestore.saveUserProfile(profile, userId: uid)
+            }
             UserDefaults.standard.set(true, forKey: Self.completedKey)
             await MainActor.run { dismiss() }
         } catch {

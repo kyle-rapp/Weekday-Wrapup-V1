@@ -20,19 +20,25 @@ struct HistoryView: View {
                 )
             } else {
                 List(entries) { entry in
-                    if let post = firestore.feedPost(byId: entry.id) {
-                        NavigationLink {
-                            PostDetailView(post: post)
-                                .environmentObject(firestore)
-                                .environmentObject(auth)
-                                .environmentObject(feedViewModel)
-                        } label: {
+                    Group {
+                        if let post = firestore.feedPost(byId: entry.id) {
+                            NavigationLink {
+                                PostDetailView(post: post)
+                                    .environmentObject(firestore)
+                                    .environmentObject(auth)
+                                    .environmentObject(feedViewModel)
+                            } label: {
+                                PastWrapupRow(entry: entry)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        } else {
                             PastWrapupRow(entry: entry)
+                                .foregroundStyle(.secondary)
                         }
-                    } else {
-                        PastWrapupRow(entry: entry)
-                            .foregroundStyle(.secondary)
                     }
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                 }
                 .listStyle(.plain)
             }

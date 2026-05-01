@@ -18,6 +18,7 @@ struct GroupSettingsView: View {
     @State private var allowHistory: Bool
     @State private var isSaving = false
     @State private var errorText: String?
+    @State private var memberIdPendingPastAccess: String?
 
     init(group: SocialGroup) {
         self.group = group
@@ -148,6 +149,32 @@ struct GroupSettingsView: View {
         } message: {
             Text(errorText ?? "")
         }
+        .confirmationDialog(
+            "Allow access to past messages?",
+            isPresented: Binding(
+                get: { memberIdPendingPastAccess != nil },
+                set: { if !$0 { memberIdPendingPastAccess = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Yes — show past group messages") {
+                if let id = memberIdPendingPastAccess {
+                    memberIdPendingPastAccess = nil
+                    Task { await addMemberWithHistoryChoice(newId: id, canSeePast: true) }
+                }
+            }
+            Button("No — only new messages") {
+                if let id = memberIdPendingPastAccess {
+                    memberIdPendingPastAccess = nil
+                    Task { await addMemberWithHistoryChoice(newId: id, canSeePast: false) }
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                memberIdPendingPastAccess = nil
+            }
+        } message: {
+            Text("This applies to this person only. You can still change the group default below.")
+        }
     }
 
     private func shortUserLabel(_ uid: String) -> String {
@@ -174,7 +201,7 @@ struct GroupSettingsView: View {
         usernameLookupHint = nil
         let q = usernameLookup.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return }
-        guard let uid = auth.currentUser?.id else { return }
+        guard auth.currentUser?.id != nil else { return }
         let ids = await firestore.lookupUserIdsByExactDisplayName(q)
         await MainActor.run {
             if ids.isEmpty {
@@ -186,24 +213,33 @@ struct GroupSettingsView: View {
                     usernameLookupHint = "That person is already a member."
                 } else {
                     usernameLookup = ""
-                    Task {
-                        do {
-                            try await firestore.addGroupMember(groupId: group.id, memberUserId: newId, actingUserId: uid)
-                            await MainActor.run {
-                                if !memberIds.contains(newId) {
-                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                                        memberIds.append(newId)
-                                    }
-                                }
-                                usernameLookupHint = "Added to the group."
-                            }
-                        } catch {
-                            await MainActor.run {
-                                usernameLookupHint = error.localizedDescription
-                            }
-                        }
+                    usernameLookupHint = nil
+                    memberIdPendingPastAccess = newId
+                }
+            }
+        }
+    }
+
+    private func addMemberWithHistoryChoice(newId: String, canSeePast: Bool) async {
+        guard let uid = auth.currentUser?.id else { return }
+        do {
+            try await firestore.addGroupMember(
+                groupId: group.id,
+                memberUserId: newId,
+                actingUserId: uid,
+                canSeePastMessages: canSeePast
+            )
+            await MainActor.run {
+                if !memberIds.contains(newId) {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                        memberIds.append(newId)
                     }
                 }
+                usernameLookupHint = "Added to the group."
+            }
+        } catch {
+            await MainActor.run {
+                usernameLookupHint = error.localizedDescription
             }
         }
     }

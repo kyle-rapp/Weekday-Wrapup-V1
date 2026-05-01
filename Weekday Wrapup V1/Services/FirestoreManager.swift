@@ -178,6 +178,7 @@ final class FirestoreManager: ObservableObject {
                     let desc = data["description"] as? String
                     let adminIds = data["adminIds"] as? [String]
                     let createdAt = (data["createdAt"] as? Timestamp)?.dateValue()
+                    let memberHistoryAccess = data["memberHistoryAccess"] as? [String: Bool]
                     return SocialGroup(
                         id: doc.documentID,
                         name: name,
@@ -187,6 +188,7 @@ final class FirestoreManager: ObservableObject {
                         createdAt: createdAt,
                         invitedContacts: invited,
                         allowHistoryAccessForNewMembers: allowHistory,
+                        memberHistoryAccess: memberHistoryAccess,
                         description: desc
                     )
                 }
@@ -283,8 +285,8 @@ final class FirestoreManager: ObservableObject {
         }
     }
 
-    /// Adds a member by user id (owner or admin). Does not remove pending email/phone invites.
-    func addGroupMember(groupId: String, memberUserId: String, actingUserId: String) async throws {
+    /// Adds a member by user id (owner or admin). Optionally records whether they may see past group content.
+    func addGroupMember(groupId: String, memberUserId: String, actingUserId: String, canSeePastMessages: Bool? = nil) async throws {
         _ = try requireAuthUser(matchingExpectedUid: actingUserId)
         let ref = db.collection("groups").document(groupId)
         let snap = try await ref.getDocument()
@@ -300,8 +302,14 @@ final class FirestoreManager: ObservableObject {
         var members = Set(data["memberIds"] as? [String] ?? [])
         members.insert(owner)
         members.insert(memberUserId)
+        var update: [String: Any] = ["memberIds": Array(members)]
+        if let canSeePastMessages {
+            var historyMap = (data["memberHistoryAccess"] as? [String: Bool]) ?? [:]
+            historyMap[memberUserId] = canSeePastMessages
+            update["memberHistoryAccess"] = historyMap
+        }
         try await runWrite(successLog: "Member added") {
-            try await ref.updateData(["memberIds": Array(members)])
+            try await ref.updateData(update)
         }
     }
 
@@ -642,10 +650,18 @@ final class FirestoreManager: ObservableObject {
         _ = try requireAuthUser(matchingExpectedUid: currentUserId)
         try await runWrite(successLog: follow ? "Now following user" : "Unfollowed user") {
             let ref = self.db.collection("users").document(currentUserId)
+            let followDocId = "\(currentUserId)__\(targetUserId)"
+            let followRef = self.db.collection("follows").document(followDocId)
             if follow {
                 try await ref.updateData(["following": FieldValue.arrayUnion([targetUserId])])
+                try await followRef.setData([
+                    "followerId": currentUserId,
+                    "followingId": targetUserId,
+                    "createdAt": FieldValue.serverTimestamp()
+                ], merge: true)
             } else {
                 try await ref.updateData(["following": FieldValue.arrayRemove([targetUserId])])
+                try await followRef.delete()
             }
         }
     }
@@ -768,7 +784,9 @@ final class FirestoreManager: ObservableObject {
             "userReactions": [:] as [String: String],
             "reactionUsers": [:] as [String: String],
             "visibility": checkIn.visibility.rawValue,
-            "commentCount": 0
+            "commentCount": 0,
+            "softSupportCounts": Dictionary(uniqueKeysWithValues: SoftSupportReactionKind.allCases.map { ($0.rawValue, 0) }),
+            "softSupportByUser": [:] as [String: [String]]
         ]
         if let intensity = checkIn.intensity {
             data["intensity"] = intensity
@@ -901,6 +919,190 @@ final class FirestoreManager: ObservableObject {
         }
     }
 
+    // MARK: - Soft support reactions (`posts/{id}/reactions` + denormalized post fields)
+
+    func toggleSoftSupportReaction(postId: String, userId: String, kind: SoftSupportReactionKind) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        if Self.isXcodePreview {
+            // Keep Previews responsive: update local cache only.
+            var list = allPostsRaw
+            guard let idx = list.firstIndex(where: { $0.id == postId }) else { return }
+            var p = list[idx]
+            let key = kind.rawValue
+            var types = p.softSupportByUser[userId] ?? []
+            if let i = types.firstIndex(of: key) {
+                types.remove(at: i)
+                p.softSupportCounts[key] = max(0, (p.softSupportCounts[key] ?? 1) - 1)
+            } else {
+                if !types.contains(key) { types.append(key) }
+                p.softSupportCounts[key, default: 0] += 1
+            }
+            if types.isEmpty {
+                p.softSupportByUser.removeValue(forKey: userId)
+            } else {
+                p.softSupportByUser[userId] = types
+            }
+            list[idx] = p
+            allPostsRaw = list
+            applyPostVisibilityFilter()
+            return
+        }
+        try await runWrite(successLog: "Soft support reaction updated") {
+            try await self.performToggleSoftSupport(postId: postId, userId: userId, kind: kind)
+        }
+    }
+
+    private func performToggleSoftSupport(postId: String, userId: String, kind: SoftSupportReactionKind) async throws {
+        let postRef = db.collection("posts").document(postId)
+        let reactionId = SoftSupportReactionKind.documentId(userId: userId, kind: kind)
+        let reactionRef = postRef.collection("reactions").document(reactionId)
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            db.runTransaction({ transaction, errorPointer -> Any? in
+                do {
+                    let postSnap = try transaction.getDocument(postRef)
+                    guard postSnap.exists, var pdata = postSnap.data() else {
+                        throw NSError(domain: "FirestoreManager", code: 404, userInfo: [NSLocalizedDescriptionKey: "Post not found"])
+                    }
+
+                    var counts: [String: Int] = [:]
+                    if let raw = pdata["softSupportCounts"] as? [String: Any] {
+                        for (k, v) in raw {
+                            counts[k] = FirestoreManager.intFromFirestore(v)
+                        }
+                    }
+                    for k in SoftSupportReactionKind.allCases.map(\.rawValue) where counts[k] == nil {
+                        counts[k] = 0
+                    }
+
+                    var byUser: [String: [String]] = [:]
+                    if let raw = pdata["softSupportByUser"] as? [String: Any] {
+                        for (uid, val) in raw {
+                            if let arr = val as? [String] {
+                                byUser[uid] = arr
+                            }
+                        }
+                    }
+
+                    let reactionSnap = try transaction.getDocument(reactionRef)
+                    let exists = reactionSnap.exists
+                    let typeKey = kind.rawValue
+
+                    if exists {
+                        transaction.deleteDocument(reactionRef)
+                        counts[typeKey] = max(0, (counts[typeKey] ?? 1) - 1)
+                        var arr = byUser[userId] ?? []
+                        arr.removeAll { $0 == typeKey }
+                        if arr.isEmpty {
+                            byUser.removeValue(forKey: userId)
+                        } else {
+                            byUser[userId] = arr
+                        }
+                    } else {
+                        transaction.setData([
+                            "userId": userId,
+                            "type": typeKey,
+                            "createdAt": FieldValue.serverTimestamp()
+                        ], forDocument: reactionRef)
+                        counts[typeKey, default: 0] += 1
+                        var arr = byUser[userId] ?? []
+                        if !arr.contains(typeKey) { arr.append(typeKey) }
+                        byUser[userId] = arr
+                    }
+
+                    transaction.updateData([
+                        "softSupportCounts": counts,
+                        "softSupportByUser": byUser
+                    ], forDocument: postRef)
+                    return nil
+                } catch {
+                    errorPointer?.pointee = error as NSError
+                    return nil
+                }
+            }, completion: { _, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            })
+        }
+    }
+
+    // MARK: - Profile details (`users/{uid}/profile/details`)
+
+    private func userProfileDetailsRef(userId: String) -> DocumentReference {
+        db.collection("users").document(userId).collection("profile").document("details")
+    }
+
+    func fetchProfileDetails(userId: String) async -> ProfileDetails? {
+        if Self.isXcodePreview { return nil }
+        do {
+            let snap = try await userProfileDetailsRef(userId: userId).getDocument()
+            guard snap.exists, let data = snap.data() else { return nil }
+            return try ProfileDetails.fromFirestoreDictionary(data)
+        } catch {
+            print("⚠️ fetchProfileDetails: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    func saveProfileDetails(_ details: ProfileDetails, userId: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        try await runWrite(successLog: "Profile details saved") {
+            let payload = try details.asFirestoreDictionary()
+            try await self.userProfileDetailsRef(userId: userId).setData(payload, merge: true)
+        }
+    }
+
+    /// `true` when Firestore has at least `minimum` documents authored by this user.
+    func hasAtLeastPosts(authorId: String, minimum: Int) async -> Bool {
+        if Self.isXcodePreview { return false }
+        guard minimum > 0 else { return true }
+        do {
+            let snap = try await db.collection("posts")
+                .whereField("authorId", isEqualTo: authorId)
+                .limit(to: minimum)
+                .getDocuments()
+            return snap.documents.count >= minimum
+        } catch {
+            print("⚠️ hasAtLeastPosts: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Recent thumbs on / off recommendations—the scoring engine uses this as a signal.
+    func fetchRecommendationFeedbackSummary(userId: String, limit: Int = 36) async -> [(title: String, helpful: Bool)] {
+        if Self.isXcodePreview { return [] }
+        do {
+            let snap = try await db.collection("users").document(userId).collection("recommendationFeedback")
+                .order(by: "createdAt", descending: true)
+                .limit(to: limit)
+                .getDocuments()
+            return snap.documents.compactMap { doc -> (title: String, helpful: Bool)? in
+                let d = doc.data()
+                guard let title = d["title"] as? String, let helpful = d["helpful"] as? Bool else { return nil }
+                return (title: title, helpful: helpful)
+            }
+        } catch {
+            print("⚠️ fetchRecommendationFeedbackSummary: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    /// Lightweight moderation signal — `userReports/{autoId}`.
+    func submitUserReport(reporterId: String, reportedUserId: String, reason: String?) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: reporterId)
+        try await runWrite(successLog: "User report submitted") {
+            _ = try await self.db.collection("userReports").addDocument(data: [
+                "reporterId": reporterId,
+                "reportedUserId": reportedUserId,
+                "reason": reason ?? "",
+                "createdAt": FieldValue.serverTimestamp()
+            ])
+        }
+    }
+
     // MARK: - Helpers (shared with FeedPost mapping)
 
     static func defaultReactionCounts() -> [String: Int] {
@@ -912,6 +1114,34 @@ final class FirestoreManager: ObservableObject {
         if let l = any as? Int64 { return Int(l) }
         if let d = any as? Double { return Int(d) }
         return 0
+    }
+
+    /// Converts Firestore-native values (Timestamp/Date/etc.) to JSON-safe values.
+    private func sanitizeFirestoreForJSON(_ any: Any) -> Any {
+        if let ts = any as? Timestamp {
+            return ts.dateValue().timeIntervalSince1970
+        }
+        if let date = any as? Date {
+            return date.timeIntervalSince1970
+        }
+        if let dict = any as? [String: Any] {
+            var out: [String: Any] = [:]
+            for (k, v) in dict {
+                out[k] = sanitizeFirestoreForJSON(v)
+            }
+            return out
+        }
+        if let array = any as? [Any] {
+            return array.map { sanitizeFirestoreForJSON($0) }
+        }
+        if let s = any as? String { return s }
+        if let b = any as? Bool { return b }
+        if let i = any as? Int { return i }
+        if let l = any as? Int64 { return Int(l) }
+        if let d = any as? Double { return d }
+        if let n = any as? NSNumber { return n }
+        if any is NSNull { return NSNull() }
+        return String(describing: any)
     }
 
     static func normalizeReactions(_ dict: [String: Any]?) -> [String: Int] {
@@ -953,18 +1183,42 @@ final class FirestoreManager: ObservableObject {
         }
     }
 
-    // MARK: - User public profile (`users/{uid}/profile/main`)
+    // MARK: - Profile + support
+
+    private func userRootRef(userId: String) -> DocumentReference {
+        db.collection("users").document(userId)
+    }
 
     private func userPublicProfileRef(userId: String) -> DocumentReference {
         db.collection("users").document(userId).collection("profile").document("main")
     }
 
+    private func supportSettingsRef(userId: String) -> DocumentReference {
+        db.collection("users").document(userId).collection("support").document("settings")
+    }
+
+    private func supportInboxRef(userId: String) -> CollectionReference {
+        db.collection("users").document(userId).collection("supportInbox")
+    }
+
     func fetchUserProfile(userId: String) async -> UserProfile? {
         if Self.isXcodePreview { return nil }
         do {
-            let snap = try await userPublicProfileRef(userId: userId).getDocument()
+            let snap = try await userRootRef(userId: userId).getDocument()
             guard snap.exists, let data = snap.data() else { return nil }
-            return try UserProfile.fromFirestoreDictionary(data)
+            print("RAW FIRESTORE:", data)
+            let sanitized = sanitizeFirestoreForJSON(data)
+            guard JSONSerialization.isValidJSONObject(sanitized) else {
+                print("⚠️ fetchUserProfile: sanitized payload is not valid JSON")
+                return nil
+            }
+            let jsonData = try JSONSerialization.data(withJSONObject: sanitized, options: [])
+            do {
+                return try JSONDecoder().decode(UserProfile.self, from: jsonData)
+            } catch {
+                print("⚠️ fetchUserProfile decode: \(error.localizedDescription)")
+                return nil
+            }
         } catch {
             print("⚠️ fetchUserProfile: \(error.localizedDescription)")
             return nil
@@ -975,7 +1229,165 @@ final class FirestoreManager: ObservableObject {
         _ = try requireAuthUser(matchingExpectedUid: userId)
         try await runWrite(successLog: "User profile saved") {
             let payload = try profile.asFirestoreDictionary()
-            try await self.userPublicProfileRef(userId: userId).setData(payload, merge: true)
+            try await self.userRootRef(userId: userId).setData(payload, merge: true)
+        }
+    }
+
+    func saveSupportSettings(_ settings: SupportSettings, userId: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        try await runWrite(successLog: "Support settings saved") {
+            let payload = try settings.asFirestoreDictionary()
+            try await self.supportSettingsRef(userId: userId).setData(payload, merge: true)
+        }
+    }
+
+    func fetchSupportSettings(userId: String) async -> SupportSettings? {
+        if Self.isXcodePreview { return nil }
+        do {
+            let snap = try await supportSettingsRef(userId: userId).getDocument()
+            guard snap.exists, let data = snap.data() else { return nil }
+            return try SupportSettings.fromFirestoreDictionary(data)
+        } catch {
+            print("⚠️ fetchSupportSettings: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Mutual relationship gate via `/follows` documents:
+    /// `followerId` follows `followingId`.
+    func isFriend(currentUserId: String, otherUserId: String) async -> Bool {
+        if Self.isXcodePreview { return false }
+        guard !currentUserId.isEmpty, !otherUserId.isEmpty, currentUserId != otherUserId else { return false }
+        do {
+            let a = try await db.collection("follows")
+                .whereField("followerId", isEqualTo: currentUserId)
+                .whereField("followingId", isEqualTo: otherUserId)
+                .limit(to: 1)
+                .getDocuments()
+            guard !a.documents.isEmpty else { return false }
+
+            let b = try await db.collection("follows")
+                .whereField("followerId", isEqualTo: otherUserId)
+                .whereField("followingId", isEqualTo: currentUserId)
+                .limit(to: 1)
+                .getDocuments()
+            return !b.documents.isEmpty
+        } catch {
+            print("⚠️ isFriend: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    func sendSupportMessage(
+        fromUserId: String,
+        targetUserId: String,
+        text: String?
+    ) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: fromUserId)
+        try await runWrite(successLog: "Support message sent") {
+            try await supportInboxRef(userId: targetUserId).addDocument(data: [
+                "fromUserId": fromUserId,
+                "type": SupportInboxType.message.rawValue,
+                "text": text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                "createdAt": FieldValue.serverTimestamp()
+            ])
+        }
+    }
+
+    func sendSupportInvite(
+        fromUserId: String,
+        targetUserId: String,
+        activity: String
+    ) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: fromUserId)
+        let trimmed = activity.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        try await runWrite(successLog: "Support invite sent") {
+            try await supportInboxRef(userId: targetUserId).addDocument(data: [
+                "fromUserId": fromUserId,
+                "type": SupportInboxType.invite.rawValue,
+                "activity": trimmed,
+                "createdAt": FieldValue.serverTimestamp()
+            ])
+        }
+    }
+
+    func sendSupportGift(
+        fromUserId: String,
+        targetUserId: String,
+        itemTitle: String,
+        itemURL: String
+    ) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: fromUserId)
+        let title = itemTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let url = itemURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, !url.isEmpty else { return }
+        try await runWrite(successLog: "Support gift sent") {
+            try await supportInboxRef(userId: targetUserId).addDocument(data: [
+                "fromUserId": fromUserId,
+                "type": SupportInboxType.gift.rawValue,
+                "itemTitle": title,
+                "itemURL": url,
+                "createdAt": FieldValue.serverTimestamp()
+            ])
+        }
+    }
+
+    func fetchSupportInbox(userId: String, limit: Int = 40) async -> [SupportInboxItem] {
+        if Self.isXcodePreview { return [] }
+        do {
+            let snap = try await supportInboxRef(userId: userId)
+                .order(by: "createdAt", descending: true)
+                .limit(to: limit)
+                .getDocuments()
+            return snap.documents.compactMap { SupportInboxItem($0) }
+        } catch {
+            print("⚠️ fetchSupportInbox: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    /// Full profile save used by `EditProfileView`.
+    /// Writes:
+    /// - `users/{userId}` (root: display identity)
+    /// - `users/{userId}/profile/main` (public profile fields)
+    /// - `users/{userId}/profile/details` (insight summary + extra details)
+    func saveProfileSystem(
+        userId: String,
+        displayName: String,
+        username: String,
+        profile: UserProfile,
+        details: ProfileDetails
+    ) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        try await runWrite(successLog: "Profile system saved") {
+            try await self.db.collection("users").document(userId).setData([
+                "name": displayName,
+                "username": username,
+                "updatedAt": FieldValue.serverTimestamp()
+            ], merge: true)
+
+            let profilePayload = try profile.asFirestoreDictionary()
+            try await self.userPublicProfileRef(userId: userId).setData(profilePayload, merge: true)
+
+            let detailsPayload = try details.asFirestoreDictionary()
+            try await self.userProfileDetailsRef(userId: userId).setData(detailsPayload, merge: true)
+        }
+    }
+
+    func submitRecommendationFeedback(
+        userId: String,
+        recommendationId: String,
+        helpful: Bool
+    ) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        try await runWrite(successLog: "Recommendation feedback saved") {
+            let ref = self.db.collection("users").document(userId).collection("recommendationFeedback").document()
+            try await ref.setData([
+                "recommendationId": recommendationId,
+                "helpful": helpful,
+                "createdAt": FieldValue.serverTimestamp()
+            ])
         }
     }
 

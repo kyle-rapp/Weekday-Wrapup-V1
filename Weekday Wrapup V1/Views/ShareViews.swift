@@ -167,10 +167,26 @@ struct ShareOptionsView: View {
                 UserDefaults.standard.removeObject(forKey: "draftShareEmotions")
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 await auth.recordSuccessfulWrapupPost()
+                let prefs = await firestore.fetchUserPreferences(userId: uid)
+                let combinedText = [
+                    checkInData.emotionalInsight,
+                    checkInData.whoopsText,
+                    checkInData.weeklyGoal,
+                    checkInData.monthlyGoal
+                ]
+                .joined(separator: " ")
+                let bundle = DailyCheckInEngine.buildBundle(
+                    emotion: checkInData.firstSelectedEmotionLabel,
+                    intensity: checkInData.intensity ?? 5,
+                    journalText: combinedText,
+                    helpfulTags: checkInData.helpfulTags ?? [],
+                    userPreferences: prefs,
+                    weather: nil
+                )
                 isShowing = false
                 feedError = nil
                 tabRouter.completePostToFeedFlow()
-                tabRouter.schedulePostCheckInReflection()
+                tabRouter.presentDailyRecommendations(bundle)
             } else {
                 let msg = firestore.errorMessage ?? "Could not post to the feed."
                 print("❌ Firestore error:", msg)

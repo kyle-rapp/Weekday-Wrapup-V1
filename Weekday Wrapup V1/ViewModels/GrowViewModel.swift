@@ -14,8 +14,11 @@ final class GrowViewModel: ObservableObject {
     /// Saved personalization profile (optional).
     @Published private(set) var userPreferences: UserPreferences?
 
-    /// Cached personalized cards (2–3 items).
+    /// Cached personalized cards (3–5 items).
     @Published private(set) var personalizedRecommendations: [Recommendation] = []
+
+    /// Recent thumbs on recommendations (from Firestore).
+    @Published private(set) var recommendationFeedbackRows: [(title: String, helpful: Bool)] = []
 
     private let recommendationEngine = PersonalizedRecommendationEngine()
     private var recommendationCacheSignature: String = ""
@@ -30,6 +33,11 @@ final class GrowViewModel: ObservableObject {
         invalidateRecommendationCache()
     }
 
+    func updateRecommendationFeedback(_ rows: [(title: String, helpful: Bool)]) {
+        recommendationFeedbackRows = rows
+        invalidateRecommendationCache()
+    }
+
     func invalidateRecommendationCache() {
         recommendationCacheSignature = ""
     }
@@ -38,6 +46,8 @@ final class GrowViewModel: ObservableObject {
     func refreshPersonalizedRecommendations(weather: RecommendationWeatherHint) {
         let history = filteredEntries
         let (emotion, intensity, tags) = PersonalizedRecommendationEngine.moodContext(from: history)
+        let excluded = RecentRecommendationDedupe.excludedTitles()
+        let fb = recommendationFeedbackRows.map { ($0.title, $0.helpful) }
         let sig = [
             emotion,
             "\(intensity)",
@@ -45,7 +55,9 @@ final class GrowViewModel: ObservableObject {
             userPreferences.map { String(describing: $0) } ?? "nil",
             weather.rawValue,
             "\(history.count)",
-            selectedEmotion ?? "_all"
+            selectedEmotion ?? "_all",
+            fb.map { "\($0.0)|\($0.1)" }.joined(separator: ";"),
+            excluded.sorted().joined(separator: ",")
         ].joined(separator: "|")
 
         guard sig != recommendationCacheSignature else { return }
@@ -57,8 +69,11 @@ final class GrowViewModel: ObservableObject {
             tags: tags,
             preferences: userPreferences,
             history: history,
-            weather: weather
+            weather: weather,
+            feedbackRows: fb,
+            excludedTitlesLowercased: excluded
         )
+        RecentRecommendationDedupe.recordShownTitles(personalizedRecommendations.map(\.title))
     }
 
     // MARK: - Filtered data

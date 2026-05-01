@@ -50,6 +50,8 @@ struct MainTabView: View {
             }
             .environmentObject(tabRouter)
             .environmentObject(feedViewModel)
+            .environmentObject(ProfileManager.shared)
+            .environmentObject(ResourceRecommendationManager.shared)
             .onChange(of: tabRouter.selectedTab) { _, _ in
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             }
@@ -76,6 +78,13 @@ struct MainTabView: View {
         .sheet(isPresented: $tabRouter.showPostCheckInReflection) {
             PostCheckInReflectionSheet()
                 .environmentObject(tabRouter)
+        }
+        .sheet(item: $tabRouter.dailyRecommendations) { payload in
+            DailyCheckInRecommendationsSheet(bundle: payload.bundle) {
+                tabRouter.dismissDailyRecommendations()
+            }
+            .environmentObject(auth)
+            .environmentObject(firestore)
         }
     }
 }

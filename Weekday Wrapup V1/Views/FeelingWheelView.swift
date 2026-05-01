@@ -49,6 +49,18 @@ private enum WheelData {
         "Scared": ["critical", "confused", "rejected", "helpless", "submissive", "insecure"],
     ]
 
+    /// All primary + secondary labels on the wheel (for clearing selection).
+    static var allWheelLabels: Set<String> {
+        var s = Set<String>()
+        for p in primaryOrder {
+            s.insert(p)
+            for sub in primaryToSecondaries[p] ?? [] {
+                s.insert(sub)
+            }
+        }
+        return s
+    }
+
     static func color(for primary: String) -> Color {
         switch primary {
         case "Joyful": return Color(red: 0.97, green: 0.80, blue: 0.82)   // #F7CCD0
@@ -230,9 +242,16 @@ private struct EmotionWheelCanvas: View {
                     withAnimation(anim) {
                         if selectedPrimaryIndex == index {
                             selectedPrimaryIndex = nil
+                            selectedEmotions.remove(name)
+                            for sub in WheelData.primaryToSecondaries[name] ?? [] {
+                                selectedEmotions.remove(sub)
+                            }
                         } else {
+                            for label in WheelData.allWheelLabels {
+                                selectedEmotions.remove(label)
+                            }
                             selectedPrimaryIndex = index
-                            if !selectedEmotions.contains(name) { selectedEmotions.insert(name) }
+                            selectedEmotions.insert(name)
                         }
                     }
                 }

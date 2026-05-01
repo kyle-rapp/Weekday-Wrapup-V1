@@ -14,6 +14,9 @@ struct CreateGroupView: View {
     @State private var displayNames: [String: String] = [:]
     @State private var inviteInput = ""
     @State private var pendingInvites: [String] = []
+    @State private var allowNewMembersPastPosts = false
+    @State private var usernameLookup = ""
+    @State private var usernameLookupHint: String?
     @State private var isSaving = false
     @State private var errorText: String?
 
@@ -64,6 +67,35 @@ struct CreateGroupView: View {
                 Text("Invites (optional)")
             } footer: {
                 Text("Stored as contact strings until they join the app.")
+            }
+
+            Section {
+                Toggle("Allow new members to see past posts", isOn: $allowNewMembersPastPosts)
+            } footer: {
+                Text("You can change this later in group settings.")
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Add by username")
+                        .font(.headline)
+                    HStack {
+                        TextField("Exact profile name", text: $usernameLookup)
+                            .textFieldStyle(.roundedBorder)
+                            .textInputAutocapitalization(.never)
+                        Button("Find") {
+                            Task { await findMemberByUsername() }
+                        }
+                        .font(.body.weight(.semibold))
+                    }
+                    if let usernameLookupHint {
+                        Text(usernameLookupHint)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("Username (optional)")
             }
 
             Section {
@@ -130,6 +162,28 @@ struct CreateGroupView: View {
         }
     }
 
+    private func findMemberByUsername() async {
+        usernameLookupHint = nil
+        let q = usernameLookup.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return }
+        let ids = await firestore.lookupUserIdsByExactDisplayName(q)
+        await MainActor.run {
+            if ids.isEmpty {
+                usernameLookupHint = "No profile found with that exact name."
+            } else if ids.count > 1 {
+                usernameLookupHint = "Multiple matches—ask them to confirm their profile name."
+            } else if let id = ids.first {
+                if selectedMemberIds.contains(id) {
+                    usernameLookupHint = "Already added."
+                } else {
+                    selectedMemberIds.insert(id)
+                    usernameLookup = ""
+                    usernameLookupHint = "Added to the group."
+                }
+            }
+        }
+    }
+
     private func loadNames() async {
         for id in firestore.followingIds {
             let n = await firestore.userDisplayName(userId: id)
@@ -154,7 +208,7 @@ struct CreateGroupView: View {
                 memberIds: Array(selectedMemberIds),
                 ownerId: uid,
                 invitedContacts: invites.isEmpty ? nil : invites,
-                allowHistoryAccessForNewMembers: nil
+                allowHistoryAccessForNewMembers: allowNewMembersPastPosts ? true : nil
             )
             await MainActor.run { dismiss() }
         } catch {

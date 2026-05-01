@@ -1,8 +1,7 @@
 import Foundation
 
 /// FILE: Managers/PersonalizedRecommendationEngine.swift
-/// v2 weighted scoring: emotion / tags / preferences / helpful-tag history + intensity + weather.
-/// Returns 2–3 items, ranked.
+/// v3 context-aware scoring + 24h de-dupe + explicit thumbs feedback + time-of-day + type mix (3–5 cards).
 
 final class PersonalizedRecommendationEngine {
 
@@ -11,17 +10,21 @@ final class PersonalizedRecommendationEngine {
         let rec: Recommendation
     }
 
-    /// `score = emotionMatch*3 + tagMatch*5 + preferenceMatch*4 + historyMatch*6` per candidate (weights are small integers 0–3).
     func generate(
         emotion: String,
         intensity: Int,
         tags: [String],
         preferences: UserPreferences?,
         history: [CheckInData],
-        weather: RecommendationWeatherHint = .neutral
+        weather: RecommendationWeatherHint = .neutral,
+        feedbackRows: [(title: String, helpful: Bool)] = [],
+        excludedTitlesLowercased: Set<String> = [],
+        now: Date = Date()
     ) -> [Recommendation] {
         let e = emotion.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let level = max(1, min(10, intensity))
+        let hour = Calendar.current.component(.hour, from: now)
+        let isNight = hour >= 21 || hour <= 6
         let tagCounts = Self.helpfulTagCountsForSimilarMood(history: history, emotionHint: e)
         let mergedTags = Self.mergeTagSignals(explicit: tags, fromHistory: tagCounts)
 
@@ -35,14 +38,30 @@ final class PersonalizedRecommendationEngine {
             emotionMatch: Int,
             tagMatch: Int,
             preferenceMatch: Int,
-            historyMatch: Int
+            historyMatch: Int,
+            tags: [String] = [],
+            emotionTargets: [String] = [],
+            intensityRange: ClosedRange<Int> = 1 ... 10
         ) {
             let em = min(3, max(0, emotionMatch))
             let tm = min(3, max(0, tagMatch))
             let pm = min(3, max(0, preferenceMatch))
             let hm = min(3, max(0, historyMatch))
             let score = em * 3 + tm * 5 + pm * 4 + hm * 6
-            pool.append(Candidate(score: score, rec: Recommendation(title: title, reason: reason, action: action, type: type)))
+            pool.append(
+                Candidate(
+                    score: score,
+                    rec: Recommendation(
+                        title: title,
+                        reason: reason,
+                        action: action,
+                        type: type,
+                        tags: tags,
+                        emotionTargets: emotionTargets,
+                        intensityRange: intensityRange
+                    )
+                )
+            )
         }
 
         func emotionTier(for keywords: [String]) -> Int {
@@ -209,8 +228,13 @@ final class PersonalizedRecommendationEngine {
             return true
         }
 
+        let dedupPool = gated.filter { cand in
+            !excludedTitlesLowercased.contains(cand.rec.title.lowercased())
+        }
+        let workingPool = dedupPool.isEmpty ? gated : dedupPool
+
         var bestByTitle: [String: Candidate] = [:]
-        for c in gated {
+        for c in workingPool {
             let key = c.rec.title.lowercased()
             if let existing = bestByTitle[key] {
                 if c.score > existing.score { bestByTitle[key] = c }
@@ -219,12 +243,37 @@ final class PersonalizedRecommendationEngine {
             }
         }
 
-        let sorted = bestByTitle.values.sorted { $0.score > $1.score }
-        var out: [Recommendation] = sorted.prefix(3).map(\.rec)
-        if out.count == 1, sorted.count >= 2 {
-            out = [sorted[0].rec, sorted[1].rec]
-        }
-        if out.isEmpty {
+        let uniqueRecs = bestByTitle.values.map(\.rec)
+        let likedTitles = Set(feedbackRows.filter { $0.helpful }.map { $0.title.lowercased() })
+        let dislikedTitles = Set(feedbackRows.filter { !$0.helpful }.map { $0.title.lowercased() })
+        let likedIds = Set(uniqueRecs.filter { likedTitles.contains($0.title.lowercased()) }.map(\.id))
+        let dislikedIds = Set(uniqueRecs.filter { dislikedTitles.contains($0.title.lowercased()) }.map(\.id))
+
+        var preferenceTags: [String] = tags
+        if preferences?.enjoysWalking == true { preferenceTags.append("outdoor") }
+        if preferences?.journals == true { preferenceTags.append("journal") }
+        if preferences?.meditates == true { preferenceTags.append("calm") }
+        if preferences?.callsFriends == true { preferenceTags.append("connection") }
+
+        let context = RecommendationContext(
+            emotion: e,
+            intensity: level,
+            preferences: preferenceTags,
+            isNight: isNight,
+            weather: weather.rawValue == RecommendationWeatherHint.neutral.rawValue ? nil : weather.rawValue,
+            likedRecommendations: likedIds,
+            dislikedRecommendations: dislikedIds
+        )
+
+        let sorted = uniqueRecs
+            .map { rec -> Candidate in
+                let base = bestByTitle[rec.title.lowercased()]?.score ?? 0
+                let v2 = Int(scoreRecommendation(rec, context: context) * 10)
+                return Candidate(score: base + v2, rec: rec)
+            }
+            .sorted { $0.score > $1.score }
+        let mixed = Self.pickMixedTypes(from: sorted, maxCount: 5)
+        if mixed.isEmpty {
             return [
                 Recommendation(
                     title: "Check in again soon",
@@ -234,7 +283,88 @@ final class PersonalizedRecommendationEngine {
                 )
             ]
         }
-        return Array(out.prefix(3))
+        return mixed
+    }
+
+    private static func timeBonus(now: Date, type: RecommendationType) -> Int {
+        let h = Calendar.current.component(.hour, from: now)
+        switch type {
+        case .action:
+            return ((7 ... 11).contains(h) || (16 ... 20).contains(h)) ? 2 : 0
+        case .regulation:
+            return (h >= 21 || h <= 6) ? 2 : 1
+        case .reflection:
+            return (h >= 19 || h <= 8) ? 2 : 1
+        case .connection:
+            return (17 ... 22).contains(h) ? 2 : 1
+        }
+    }
+
+    private static func intensityFit(level: Int, type: RecommendationType) -> Int {
+        if level >= 8 {
+            return type == .regulation ? 3 : (type == .action ? 1 : 0)
+        }
+        if level >= 5 {
+            return (type == .regulation || type == .action) ? 2 : 1
+        }
+        return (type == .reflection || type == .connection) ? 2 : 1
+    }
+
+    private static func weatherFit(weather: RecommendationWeatherHint, type: RecommendationType) -> Int {
+        if weather == .rainy, type == .regulation || type == .reflection { return 2 }
+        if weather == .sunny, type == .action { return 2 }
+        return 0
+    }
+
+    /// Past thumbs land in roughly −5…+5 per candidate (capped).
+    private static func feedbackAdjustment(title: String, rows: [(String, Bool)]) -> Int {
+        let tl = title.lowercased()
+        var delta = 0
+        for (raw, helpful) in rows {
+            let other = raw.lowercased()
+            if other == tl {
+                delta += helpful ? 5 : -6
+                continue
+            }
+            let a = Set(other.split(separator: " ").map(String.init).filter { $0.count > 2 })
+            let b = Set(tl.split(separator: " ").map(String.init).filter { $0.count > 2 })
+            let inter = a.intersection(b).count
+            if inter >= 2 {
+                delta += helpful ? 3 : -5
+            }
+        }
+        return max(-5, min(5, delta))
+    }
+
+    /// Prefer one regulation, one action, one reflection/connection, then fill by score.
+    private static func pickMixedTypes(from sorted: [Candidate], maxCount: Int) -> [Recommendation] {
+        guard !sorted.isEmpty else { return [] }
+        var picked: [Recommendation] = []
+        var usedTitles = Set<String>()
+
+        func takeFirst(_ type: RecommendationType?) {
+            guard picked.count < maxCount else { return }
+            let match = sorted.first { cand in
+                guard !usedTitles.contains(cand.rec.title) else { return false }
+                if let type { return cand.rec.type == type }
+                return true
+            }
+            guard let m = match else { return }
+            picked.append(m.rec)
+            usedTitles.insert(m.rec.title)
+        }
+
+        takeFirst(.regulation)
+        takeFirst(.action)
+        takeFirst(.reflection)
+        if picked.count < 3 { takeFirst(.connection) }
+
+        for cand in sorted where picked.count < maxCount {
+            guard !usedTitles.contains(cand.rec.title) else { continue }
+            picked.append(cand.rec)
+            usedTitles.insert(cand.rec.title)
+        }
+        return picked
     }
 
     private static func mergeTagSignals(explicit: [String], fromHistory: [String: Int]) -> [String: Int] {

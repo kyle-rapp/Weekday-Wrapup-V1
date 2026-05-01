@@ -40,54 +40,42 @@ struct LearnView: View {
 
     private static let guideSteps: [LearnStepItem] = [
         LearnStepItem(
-            number: 1,
+            id: 1,
             title: "Identify what you are feeling",
             description: "Pause and name the strongest emotion you notice, even if it’s broad.",
             systemImage: "brain.head.profile"
         ),
         LearnStepItem(
-            number: 2,
+            id: 2,
             title: "Acknowledge your emotions",
             description: "Let the feeling exist without judging it as good or bad.",
             systemImage: "heart.fill"
         ),
         LearnStepItem(
-            number: 3,
+            id: 3,
             title: "Get curious about the message",
             description: "Ask gently: what might this emotion be trying to tell me?",
             systemImage: "sparkles"
         ),
         LearnStepItem(
-            number: 4,
+            id: 4,
             title: "Build confidence handling it",
             description: "Recall one time you moved through a hard feeling before.",
             systemImage: "leaf"
         ),
         LearnStepItem(
-            number: 5,
+            id: 5,
             title: "Know you can handle it long-term",
             description: "Skills grow with practice; discomfort doesn’t mean you’re failing.",
             systemImage: "moon"
         ),
         LearnStepItem(
-            number: 6,
+            id: 6,
             title: "Take action",
             description: "Pick one small step: a breath, a text, a walk, or a boundary.",
             systemImage: "figure.walk"
         )
     ]
-
-    private static func stepEmoji(for stepNumber: Int) -> String {
-        switch stepNumber {
-        case 1: return "🧠"
-        case 2: return "💛"
-        case 3: return "✨"
-        case 4: return "🌿"
-        case 5: return "🌙"
-        case 6: return "🚶"
-        default: return "✨"
-        }
-    }
 
     var body: some View {
         ScrollView {
@@ -306,18 +294,18 @@ struct LearnView: View {
     private var sixStepGuideSection: some View {
         LearnSectionCard {
             VStack(alignment: .leading, spacing: 16) {
-                Label("A 6-step path", systemImage: "list.number")
+                Label("A six-step path", systemImage: "point.3.connected.trianglepath.dotted")
                     .font(.title3.bold())
                     .foregroundStyle(AppTheme.colors.textPrimary)
 
                 ForEach(Self.guideSteps) { step in
                     StepRowView(
-                        number: step.number,
+                        stepIndex: step.id,
                         title: step.title,
                         description: step.description,
-                        systemImage: step.systemImage,
-                        emoji: Self.stepEmoji(for: step.number)
+                        systemImage: step.systemImage
                     )
+                    .id(step.id)
                 }
             }
         }
@@ -422,14 +410,12 @@ struct LearnView: View {
 
 private struct LearnStepItem: Identifiable {
     let id: Int
-    let number: Int
     let title: String
     let description: String
     let systemImage: String
 
-    init(number: Int, title: String, description: String, systemImage: String) {
-        self.id = number
-        self.number = number
+    init(id: Int, title: String, description: String, systemImage: String) {
+        self.id = id
         self.title = title
         self.description = description
         self.systemImage = systemImage
@@ -439,11 +425,10 @@ private struct LearnStepItem: Identifiable {
 // MARK: - Step row
 
 struct StepRowView: View {
-    let number: Int
+    let stepIndex: Int
     let title: String
     let description: String
     let systemImage: String
-    let emoji: String
 
     @State private var animate = false
 
@@ -452,7 +437,7 @@ struct StepRowView: View {
     }
 
     private var stepAccent: Color {
-        switch number {
+        switch stepIndex {
         case 1: return .blue
         case 2: return .pink
         case 3: return .purple
@@ -463,61 +448,60 @@ struct StepRowView: View {
         }
     }
 
+    private var pastelFill: Color {
+        stepAccent.opacity(0.07)
+    }
+
     var body: some View {
         let safeTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Step" : title
         let safeDescription = description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Keep going—small steps add up."
             : description
 
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("\(number)")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(AppTheme.colors.textSecondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Capsule().fill(AppTheme.colors.sand.opacity(0.6)))
-                Spacer(minLength: 0)
-            }
+        HStack(alignment: .center, spacing: 16) {
+            ZStack {
+                Circle()
+                    .fill(stepAccent.opacity(0.12))
+                    .frame(width: 48, height: 48)
 
-            HStack(spacing: 14) {
                 Image(systemName: resolvedIcon)
-                    .font(.system(size: 32))
+                    .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(stepAccent)
-                    .padding(12)
-                    .background(Circle().fill(stepAccent.opacity(0.12)))
-
-                Text(emoji)
-                    .font(.system(size: 28))
-                    .accessibilityHidden(true)
             }
 
-            Text(safeTitle)
-                .font(.headline)
-                .foregroundStyle(AppTheme.colors.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(safeTitle)
+                    .font(.headline)
+                    .foregroundStyle(AppTheme.colors.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            Text(safeDescription)
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.colors.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+                Text(safeDescription)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
         }
-        .padding()
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(stepAccent.opacity(0.06))
+                .fill(pastelFill)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(stepAccent.opacity(0.15), lineWidth: 1)
+                .stroke(stepAccent.opacity(0.12), lineWidth: 1)
         )
-        .shadow(color: AppTheme.colors.bark.opacity(0.12), radius: 4, x: 0, y: 2)
+        .shadow(color: AppTheme.colors.bark.opacity(0.1), radius: 10, x: 0, y: 4)
+        .scaleEffect(animate ? 1 : 0.96)
         .opacity(animate ? 1 : 0)
-        .offset(y: animate ? 0 : 10)
         .onAppear {
-            withAnimation(.easeOut(duration: 0.45).delay(Double(number - 1) * 0.05)) {
-                animate = true
+            animate = false
+            DispatchQueue.main.async {
+                withAnimation(.spring(response: 0.48, dampingFraction: 0.86).delay(Double(stepIndex - 1) * 0.04)) {
+                    animate = true
+                }
             }
         }
     }

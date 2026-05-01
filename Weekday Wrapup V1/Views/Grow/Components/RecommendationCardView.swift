@@ -5,10 +5,16 @@ import SwiftUI
 
 struct RecommendationCardView: View {
     let recommendation: Recommendation
+    /// `true` = thumbs up, `false` = thumbs down, `nil` = none selected.
+    var selectedFeedback: Bool?
     var onStart: () -> Void
     var onFeedback: ((Bool) -> Void)?
+    @State private var feedbackState: Bool?
 
     var body: some View {
+        let isUp = feedbackState == true
+        let isDown = feedbackState == false
+
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: iconName(for: recommendation.type))
@@ -34,12 +40,50 @@ struct RecommendationCardView: View {
             .buttonStyle(.borderedProminent)
             .tint(AppTheme.colors.pine)
 
-            if let feedback = onFeedback {
-                HStack(spacing: 16) {
-                    feedbackButton(label: "Helpful", emoji: "👍", positive: true, action: { feedback(true) })
-                    feedbackButton(label: "Not helpful", emoji: "👎", positive: false, action: { feedback(false) })
+            if onFeedback != nil {
+                HStack(spacing: 20) {
+                    Button {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        let next: Bool? = (feedbackState == true) ? nil : true
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            feedbackState = next
+                        }
+                        if next != selectedFeedback {
+                            onFeedback?(true)
+                        }
+                    } label: {
+                        Image(systemName: "hand.thumbsup.fill")
+                            .font(.title3)
+                            .foregroundStyle(isUp ? Color.green : Color.gray)
+                            .scaleEffect(isUp ? 1.2 : 1.0)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Helpful")
+
+                    Button {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        let next: Bool? = (feedbackState == false) ? nil : false
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            feedbackState = next
+                        }
+                        if next != selectedFeedback {
+                            onFeedback?(false)
+                        }
+                    } label: {
+                        Image(systemName: "hand.thumbsdown.fill")
+                            .font(.title3)
+                            .foregroundStyle(isDown ? Color.red : Color.gray)
+                            .scaleEffect(isDown ? 1.2 : 1.0)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Not helpful")
                 }
                 .padding(.top, 4)
+                .animation(.easeInOut(duration: 0.2), value: feedbackState)
             }
         }
         .padding(16)
@@ -53,6 +97,14 @@ struct RecommendationCardView: View {
                 .stroke(Color.primary.opacity(0.05), lineWidth: 1)
         )
         .shadow(color: AppTheme.colors.bark.opacity(0.06), radius: 8, x: 0, y: 3)
+        .onAppear {
+            feedbackState = selectedFeedback
+        }
+        .onChange(of: selectedFeedback) { _, newValue in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                feedbackState = newValue
+            }
+        }
     }
 
     private func iconName(for type: RecommendationType) -> String {
@@ -62,20 +114,5 @@ struct RecommendationCardView: View {
         case .action: return "figure.walk"
         case .connection: return "bubble.left.and.bubble.right"
         }
-    }
-
-    @ViewBuilder
-    private func feedbackButton(label: String, emoji: String, positive: Bool, action: @escaping () -> Void) -> some View {
-        Button {
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            action()
-        } label: {
-            Text(emoji)
-                .font(.title3)
-                .padding(10)
-                .background(Capsule().fill(Color.primary.opacity(0.06)))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
     }
 }

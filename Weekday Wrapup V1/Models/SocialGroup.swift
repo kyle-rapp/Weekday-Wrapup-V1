@@ -17,6 +17,8 @@ struct SocialGroup: Identifiable, Codable, Equatable {
     var invitedContacts: [String]?
     /// When true, new members may see older group-scoped posts (client + rules must align).
     var allowHistoryAccessForNewMembers: Bool?
+    /// Per-member override: uid → may see past group-scoped content (set when they join).
+    var memberHistoryAccess: [String: Bool]?
     var description: String?
 
     init(
@@ -28,6 +30,7 @@ struct SocialGroup: Identifiable, Codable, Equatable {
         createdAt: Date? = nil,
         invitedContacts: [String]? = nil,
         allowHistoryAccessForNewMembers: Bool? = nil,
+        memberHistoryAccess: [String: Bool]? = nil,
         description: String? = nil
     ) {
         self.id = id
@@ -38,6 +41,7 @@ struct SocialGroup: Identifiable, Codable, Equatable {
         self.createdAt = createdAt
         self.invitedContacts = invitedContacts
         self.allowHistoryAccessForNewMembers = allowHistoryAccessForNewMembers
+        self.memberHistoryAccess = memberHistoryAccess
         self.description = description
     }
 }

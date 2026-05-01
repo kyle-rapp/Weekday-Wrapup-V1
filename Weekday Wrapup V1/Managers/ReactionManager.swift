@@ -15,7 +15,8 @@ enum ReactionManager {
             return ["🔥", "💥", "😤", "🫂"]
         } else if emotion.contains("happy") || emotion.contains("joy") || emotion.contains("joyful") || emotion.contains("cheerful") || emotion.contains("excited") {
             return ["❤️", "🔥", "😊", "🎉"]
-        } else if emotion.contains("peace") || emotion.contains("peaceful") || emotion.contains("content") || emotion.contains("calm") {
+        } else if emotion.contains("peace") || emotion.contains("peaceful") || emotion.contains("calm") || emotion.contains("content")
+            || emotion.contains("hopeful") || (emotion.contains("hope") && !emotion.contains("hopeless")) {
             return ["🌿", "💙", "✨", "🙏"]
         } else {
             return ["❤️", "🙏", "💬", "✨"]

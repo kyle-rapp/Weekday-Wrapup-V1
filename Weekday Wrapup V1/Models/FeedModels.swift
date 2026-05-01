@@ -56,6 +56,10 @@ struct FeedPost: Identifiable, Equatable, Hashable {
     /// When `visibility == .groups`, these are `SocialGroup.id` values that may see the post.
     var sharedGroupIds: [String]
     var createdAt: Date?
+    /// Denormalized soft reactions (`posts/{id}/reactions` subcollection kept in sync).
+    var softSupportCounts: [String: Int]
+    /// `userId` → reaction type raw values this user has active on the post.
+    var softSupportByUser: [String: [String]]
 
     /// First saved emotion label (Firestore array order) for reactions and calendar tinting.
     var primaryEmotion: String {
@@ -100,7 +104,9 @@ struct FeedPost: Identifiable, Equatable, Hashable {
         whatHelped: String? = nil,
         helpfulTags: [String] = [],
         sharedGroupIds: [String] = [],
-        createdAt: Date? = Date()
+        createdAt: Date? = Date(),
+        softSupportCounts: [String: Int]? = nil,
+        softSupportByUser: [String: [String]]? = nil
     ) {
         self.id = id
         self.authorId = authorId
@@ -123,6 +129,12 @@ struct FeedPost: Identifiable, Equatable, Hashable {
         self.helpfulTags = helpfulTags
         self.sharedGroupIds = sharedGroupIds
         self.createdAt = createdAt
+        var counts = softSupportCounts ?? [:]
+        for k in SoftSupportReactionKind.allCases.map(\.rawValue) where counts[k] == nil {
+            counts[k] = 0
+        }
+        self.softSupportCounts = counts
+        self.softSupportByUser = softSupportByUser ?? [:]
     }
 }
 
@@ -210,5 +222,35 @@ extension FeedPost {
         self.helpfulTags = data["helpfulTags"] as? [String] ?? []
         self.sharedGroupIds = data["sharedGroupIds"] as? [String] ?? []
         self.createdAt = createdAt
+
+        var softCounts: [String: Int] = [:]
+        if let raw = data["softSupportCounts"] as? [String: Any] {
+            for (k, v) in raw {
+                softCounts[k] = FirestoreFieldParsing.intValue(v)
+            }
+        }
+        for k in SoftSupportReactionKind.allCases.map(\.rawValue) where softCounts[k] == nil {
+            softCounts[k] = 0
+        }
+        self.softSupportCounts = softCounts
+
+        var byUser: [String: [String]] = [:]
+        if let raw = data["softSupportByUser"] as? [String: Any] {
+            for (uid, val) in raw {
+                if let arr = val as? [String] {
+                    byUser[uid] = arr
+                }
+            }
+        }
+        self.softSupportByUser = byUser
+    }
+
+    func softSupportCount(_ kind: SoftSupportReactionKind) -> Int {
+        softSupportCounts[kind.rawValue] ?? 0
+    }
+
+    func softSupportSelected(_ kind: SoftSupportReactionKind, userId: String?) -> Bool {
+        guard let uid = userId, let types = softSupportByUser[uid] else { return false }
+        return types.contains(kind.rawValue)
     }
 }

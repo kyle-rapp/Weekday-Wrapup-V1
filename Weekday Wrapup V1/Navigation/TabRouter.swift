@@ -15,9 +15,18 @@ final class TabRouter: ObservableObject {
     @Published var selectedTab: MainAppTab = .share
     @Published var postedToastVisible = false
     @Published var showPostCheckInReflection = false
+    @Published var dailyRecommendations: DailyRecommendationsPresentation?
 
     private var toastDismissTask: Task<Void, Never>?
     private var reflectionWorkItem: DispatchWorkItem?
+
+    func presentDailyRecommendations(_ bundle: DailyRecommendationBundle) {
+        dailyRecommendations = DailyRecommendationsPresentation(bundle: bundle)
+    }
+
+    func dismissDailyRecommendations() {
+        dailyRecommendations = nil
+    }
 
     /// Call after a successful feed post: switches to Feed, shows toast, dismisses share sheet (caller dismisses sheet).
     func completePostToFeedFlow() {

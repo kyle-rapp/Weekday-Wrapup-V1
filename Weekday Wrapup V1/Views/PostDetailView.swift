@@ -10,11 +10,15 @@ struct PostDetailView: View {
     @EnvironmentObject private var firestore: FirestoreManager
     @EnvironmentObject private var auth: AuthManager
     @EnvironmentObject private var feedViewModel: FeedViewModel
+    @EnvironmentObject private var resourceRecs: ResourceRecommendationManager
     @State private var newComment = ""
     @State private var isPostingComment = false
     @State private var showErrorAlert = false
     @State private var alertMessage = ""
     @State private var showExpandedReactionPalette = false
+    /// Author onboarding stressors (optional) for resource scoring.
+    @State private var authorStressors: [String] = []
+    @State private var showInviteSheet = false
 
     private var uid: String? { auth.currentUser?.id }
     private var livePost: FeedPost {
@@ -25,12 +29,17 @@ struct PostDetailView: View {
         firestore.isFollowing(livePost.authorId)
     }
 
-    private var suggestedResources: [ResourceLink] {
-        CuratedResourceLibrary.suggestions(
-            insight: livePost.insight,
-            goal: livePost.goal,
-            whoop: livePost.whoop,
-            emotions: livePost.selectedEmotions
+    private var postBlobForMatching: String {
+        [livePost.insight, livePost.whoop, livePost.goal, livePost.whatHelped ?? ""]
+            .joined(separator: " ")
+    }
+
+    private var rankedResources: [ResourceRecommendation] {
+        resourceRecs.recommendations(
+            postId: livePost.id,
+            postText: postBlobForMatching,
+            emotionTags: livePost.selectedEmotions,
+            stressors: authorStressors
         )
     }
 
@@ -59,15 +68,19 @@ struct PostDetailView: View {
                         if !label.isEmpty {
                             Text(label)
                                 .font(.caption.weight(.semibold))
+                                .foregroundStyle(FeedEmotionPalette.chipForeground(for: label))
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 4)
-                                .background(Color.gray.opacity(0.15))
+                                .background(FeedEmotionPalette.chipBackground(for: label))
                                 .clipShape(Capsule())
                         }
                         if let intensity = livePost.intensity {
                             Text("Intensity \(intensity)/10")
-                                .font(.caption2)
+                                .font(.caption2.weight(.medium))
                                 .foregroundStyle(.secondary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Capsule().fill(Color.primary.opacity(0.06)))
                         }
                     }
 
@@ -83,30 +96,52 @@ struct PostDetailView: View {
                             .foregroundStyle(.blue)
                     }
 
-                    if !suggestedResources.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Resources that may fit")
+                    if !rankedResources.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Helpful resources for you")
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(.secondary)
-                            ForEach(suggestedResources) { link in
-                                if let url = URL(string: link.url),
+                            ForEach(rankedResources) { rec in
+                                if let url = URL(string: rec.url),
                                    let scheme = url.scheme?.lowercased(),
                                    scheme == "http" || scheme == "https" {
                                     Link(destination: url) {
-                                        HStack {
-                                            Text(link.title)
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text(rec.title)
                                                 .font(.subheadline.weight(.semibold))
+                                                .foregroundStyle(.primary)
                                                 .multilineTextAlignment(.leading)
-                                            Spacer()
-                                            Image(systemName: "arrow.up.right.square")
+                                            Text(rec.summary)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                            HStack(spacing: 6) {
+                                                Text("Open link")
+                                                    .font(.caption.weight(.semibold))
+                                                Image(systemName: "arrow.up.right.square")
+                                                    .font(.caption.weight(.semibold))
+                                            }
+                                            .foregroundStyle(.blue)
                                         }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
                                     }
-                                    .padding(12)
-                                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.blue.opacity(0.08)))
+                                    .buttonStyle(.plain)
+                                    .padding(14)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                            .fill(Color.blue.opacity(0.07))
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                            .stroke(Color.blue.opacity(0.12), lineWidth: 1)
+                                    )
                                 }
                             }
                         }
                     }
+
+                    SoftSupportReactionBar(post: livePost, uid: uid)
+                        .environmentObject(firestore)
 
                     FeedReactionRow(
                         livePost: livePost,
@@ -196,7 +231,22 @@ struct PostDetailView: View {
             feedViewModel.clearReplyTarget()
             firestore.startCommentsListener(postId: post.id)
         }
+        .task(id: livePost.authorId) {
+            let stressors: [String]
+            if livePost.authorId == auth.currentUser?.id,
+               let prefs = await firestore.fetchUserPreferences(userId: livePost.authorId) {
+                stressors = prefs.topStressors
+            } else {
+                // Others’ preferences are private per Firestore rules — score from post text + emotions only.
+                stressors = []
+            }
+            await MainActor.run {
+                resourceRecs.invalidate(postId: livePost.id)
+                authorStressors = stressors
+            }
+        }
         .onDisappear {
+            resourceRecs.invalidate(postId: post.id)
             firestore.stopCommentsListener()
             feedViewModel.clearReplyTarget()
         }
@@ -206,6 +256,12 @@ struct PostDetailView: View {
             }
         } message: {
             Text(alertMessage)
+        }
+        .sheet(isPresented: $showInviteSheet) {
+            ActivityInviteSheet(
+                recipientName: livePost.user.name,
+                recipientUserId: livePost.authorId
+            )
         }
     }
 
@@ -243,6 +299,7 @@ struct PostDetailView: View {
             }
             Spacer()
             if let uid, uid != livePost.authorId {
+                VStack(alignment: .trailing, spacing: 8) {
                 Button {
                     Task { @MainActor in
                         await feedViewModel.toggleFollow(authorId: livePost.authorId, currentUserId: uid)
@@ -262,6 +319,20 @@ struct PostDetailView: View {
                 }
                 .buttonStyle(.borderless)
                 .animation(.easeInOut(duration: 0.2), value: isFollowingAuthor)
+
+                Button {
+                    showInviteSheet = true
+                } label: {
+                    Text("Invite")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.orange.opacity(0.16))
+                        .foregroundStyle(.orange)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.borderless)
+                }
             }
         }
     }

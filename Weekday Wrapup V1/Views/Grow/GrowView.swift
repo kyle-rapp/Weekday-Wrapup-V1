@@ -14,7 +14,10 @@ struct GrowView: View {
     @Namespace private var calendarNamespace
 
     @State private var showPreferencesOnboarding = false
-    @State private var recommendationFeedbackSent: Set<UUID> = []
+    @State private var recommendationFeedback: [UUID: Bool] = [:]
+    @State private var recommendationFeedbackSubmitting: Set<UUID> = []
+    @State private var safetyCardDismissed = false
+    @State private var therapyResourcesDismissed = false
 
     var body: some View {
         ScrollView {
@@ -29,6 +32,31 @@ struct GrowView: View {
 
                 outdoorContextSection
 
+                if showGrowSafetyPanel {
+                    EmotionalSafetySupportCard(resources: growSafetyResources) {
+                        safetyCardDismissed = true
+                    }
+                }
+
+                if !therapyResourcesDismissed, !growTherapyResources.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("Suggested resources")
+                                .font(.headline)
+                                .foregroundStyle(AppTheme.colors.textPrimary)
+                            Spacer(minLength: 8)
+                            Button("Dismiss") { therapyResourcesDismissed = true }
+                                .font(.caption.weight(.semibold))
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(growTherapyResources) { resource in
+                            ResourceCardView(resource: resource)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
                 recommendationsSection
             }
             .padding()
@@ -38,11 +66,8 @@ struct GrowView: View {
         .background(AppTheme.colors.secondaryBackground.ignoresSafeArea())
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.large)
-        .onAppear {
-            syncEntriesFromFirestore()
-            outdoorSuggestions.startIfNeeded()
-        }
         .task(id: auth.currentUser?.id) {
+            await loadRecommendationFeedback()
             await loadUserPreferences()
             await MainActor.run {
                 guard viewModel.userPreferences == nil,
@@ -53,11 +78,18 @@ struct GrowView: View {
                 showPreferencesOnboarding = true
             }
         }
+        .onAppear {
+            syncEntriesFromFirestore()
+            outdoorSuggestions.startIfNeeded()
+        }
         .onReceive(firestore.$posts) { _ in
             syncEntriesFromFirestore()
         }
         .onChange(of: auth.currentUser?.id) { _, _ in
-            recommendationFeedbackSent = []
+            recommendationFeedback = [:]
+            recommendationFeedbackSubmitting = []
+            safetyCardDismissed = false
+            therapyResourcesDismissed = false
             syncEntriesFromFirestore()
         }
         .onChange(of: viewModel.selectedEmotion) { _, _ in
@@ -88,6 +120,55 @@ struct GrowView: View {
         }
     }
 
+    private func loadRecommendationFeedback() async {
+        guard let uid = auth.currentUser?.id else {
+            await MainActor.run {
+                viewModel.updateRecommendationFeedback([])
+                refreshRecommendations()
+            }
+            return
+        }
+        let rows = await firestore.fetchRecommendationFeedbackSummary(userId: uid)
+        await MainActor.run {
+            viewModel.updateRecommendationFeedback(rows.map { (title: $0.title, helpful: $0.helpful) })
+            refreshRecommendations()
+        }
+    }
+
+    private var showGrowSafetyPanel: Bool {
+        if safetyCardDismissed { return false }
+        guard let e = viewModel.entries.sorted(by: { $0.date > $1.date }).first else { return false }
+        let emotion = e.firstSelectedEmotionLabel
+        let keywords = (e.helpfulTags ?? []).map { $0.lowercased() }
+        let extra = e.selectedEmotions.map { $0.lowercased() }.joined(separator: " ")
+        return EmotionalSafetySignals.signalsSupport(emotion: emotion, keywords: keywords, extraText: extra)
+    }
+
+    private var growSafetyResources: [ResourceRecommendation] {
+        guard let e = viewModel.entries.sorted(by: { $0.date > $1.date }).first else { return [] }
+        let text = [e.emotionalInsight, e.whoopsText].joined(separator: " ")
+        let stress = viewModel.userPreferences?.topStressors ?? []
+        return RecommendationResourceEngine.rank(
+            postText: text,
+            emotionTags: Array(e.selectedEmotions),
+            stressors: stress
+        )
+    }
+
+    private var growTherapyResources: [TherapyResource] {
+        guard let e = viewModel.entries.sorted(by: { $0.date > $1.date }).first else { return [] }
+        let text = [
+            e.emotionalInsight,
+            e.whoopsText,
+            e.weeklyGoal,
+            e.monthlyGoal
+        ].joined(separator: " ")
+        return TherapyResourceEngine.matchResources(
+            text: text,
+            emotions: Array(e.selectedEmotions)
+        )
+    }
+
     private func syncEntriesFromFirestore() {
         let list = firestore.wrapupHistoryEntries(forUserId: auth.currentUser?.id)
         viewModel.syncEntries(list)
@@ -115,6 +196,26 @@ struct GrowView: View {
 
     private func submitFeedback(_ rec: Recommendation, helpful: Bool) async {
         guard let uid = auth.currentUser?.id else { return }
+        if recommendationFeedbackSubmitting.contains(rec.id) { return }
+
+        let current = recommendationFeedback[rec.id]
+        let newValue: Bool? = (current == helpful) ? nil : helpful
+        if newValue == current { return }
+
+        await MainActor.run {
+            if newValue == nil {
+                recommendationFeedback.removeValue(forKey: rec.id)
+            } else {
+                recommendationFeedback[rec.id] = newValue
+            }
+            recommendationFeedbackSubmitting.insert(rec.id)
+        }
+
+        guard let v = newValue else {
+            await MainActor.run { recommendationFeedbackSubmitting.remove(rec.id) }
+            return
+        }
+
         do {
             try await firestore.submitRecommendationFeedback(
                 userId: uid,
@@ -122,11 +223,20 @@ struct GrowView: View {
                 title: rec.title,
                 reason: rec.reason,
                 type: rec.type,
-                helpful: helpful
+                helpful: v
             )
-            await MainActor.run { _ = recommendationFeedbackSent.insert(rec.id) }
+            await loadRecommendationFeedback()
+            await MainActor.run { recommendationFeedbackSubmitting.remove(rec.id) }
         } catch {
             print("⚠️ recommendation feedback: \(error.localizedDescription)")
+            await MainActor.run {
+                if let current {
+                    recommendationFeedback[rec.id] = current
+                } else {
+                    recommendationFeedback.removeValue(forKey: rec.id)
+                }
+                recommendationFeedbackSubmitting.remove(rec.id)
+            }
         }
     }
 
@@ -136,7 +246,6 @@ struct GrowView: View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 12) {
                 emotionFilterBar
-                    .frame(height: 40)
 
                 EmotionCalendarGridView(
                     calendar: calendarViewModel,
@@ -201,7 +310,10 @@ struct GrowView: View {
                 }
             }
             .padding(.vertical, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(height: 36)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var calendarDayDetailPanel: some View {
@@ -286,14 +398,13 @@ struct GrowView: View {
                 ForEach(viewModel.personalizedRecommendations) { rec in
                     RecommendationCardView(
                         recommendation: rec,
+                        selectedFeedback: recommendationFeedback[rec.id],
                         onStart: {
                             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                         },
-                        onFeedback: recommendationFeedbackSent.contains(rec.id)
-                            ? nil
-                            : { helpful in
-                                Task { await submitFeedback(rec, helpful: helpful) }
-                            }
+                        onFeedback: { helpful in
+                            Task { await submitFeedback(rec, helpful: helpful) }
+                        }
                     )
                 }
             }

@@ -169,6 +169,8 @@ struct FeedPostCard: View {
     @EnvironmentObject private var auth: AuthManager
     @EnvironmentObject private var feedViewModel: FeedViewModel
 
+    @State private var showInviteSheet = false
+
     private var uid: String? { auth.currentUser?.id }
     private var livePost: FeedPost {
         firestore.posts.first(where: { $0.id == post.id }) ?? post
@@ -189,10 +191,17 @@ struct FeedPostCard: View {
     private var cardBody: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top, spacing: 14) {
-                Image(systemName: "person.circle.fill")
-                    .resizable()
-                    .frame(width: 48, height: 48)
-                    .foregroundStyle(.orange.opacity(0.85))
+                NavigationLink {
+                    ProfileView(userId: livePost.authorId, contextPost: livePost)
+                        .environmentObject(firestore)
+                        .environmentObject(auth)
+                } label: {
+                    Image(systemName: "person.circle.fill")
+                        .resizable()
+                        .frame(width: 48, height: 48)
+                        .foregroundStyle(.orange.opacity(0.85))
+                }
+                .buttonStyle(.plain)
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .firstTextBaseline) {
@@ -223,6 +232,19 @@ struct FeedPostCard: View {
                             }
                             .buttonStyle(.borderless)
                             .animation(.easeInOut(duration: 0.2), value: isFollowingAuthor)
+
+                            Button {
+                                showInviteSheet = true
+                            } label: {
+                                Text("Invite")
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .background(Color.orange.opacity(0.14))
+                                    .foregroundStyle(.orange)
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.borderless)
                         }
                     }
                     Text("🔥 \(livePost.user.streak) week streak")
@@ -258,21 +280,29 @@ struct FeedPostCard: View {
                 if !label.isEmpty {
                     Text(label)
                         .font(.caption.weight(.semibold))
+                        .foregroundStyle(FeedEmotionPalette.chipForeground(for: label))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
-                        .background(Color.gray.opacity(0.15))
+                        .background(FeedEmotionPalette.chipBackground(for: label))
                         .clipShape(Capsule())
                 }
                 if let intensity = livePost.intensity {
                     Text("Intensity \(intensity)/10")
-                        .font(.caption2)
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(Color.primary.opacity(0.06)))
                 }
             }
-                .font(.body)
-                .foregroundStyle(.primary)
-                .lineLimit(3)
-                .fixedSize(horizontal: false, vertical: true)
+
+            if !livePost.insight.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(livePost.insight)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if !livePost.whoop.isEmpty {
                 Text("Whoops: \(livePost.whoop)")
@@ -283,6 +313,11 @@ struct FeedPostCard: View {
                 Text("Goal: \(livePost.goal)")
                     .font(.caption)
                     .foregroundStyle(.blue.opacity(0.9))
+            }
+
+            if uid != nil {
+                SoftSupportReactionBar(post: livePost, uid: uid)
+                    .environmentObject(firestore)
             }
 
             FeedReactionRow(
@@ -328,6 +363,12 @@ struct FeedPostCard: View {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .stroke(Color.orange.opacity(0.08), lineWidth: 1)
         )
+        .sheet(isPresented: $showInviteSheet) {
+            ActivityInviteSheet(
+                recipientName: livePost.user.name,
+                recipientUserId: livePost.authorId
+            )
+        }
     }
 }
 
@@ -347,6 +388,8 @@ private struct FeedPreviewHost: View {
         .environmentObject(auth)
         .environmentObject(firestore)
         .environmentObject(feedViewModel)
+        .environmentObject(ResourceRecommendationManager.shared)
+        .environmentObject(ProfileManager.shared)
         .onAppear {
             firestore.applyPreviewPosts(PreviewSampleData.sampleFeedPosts)
             firestore.applyPreviewFollowing(["user-alice"])
@@ -388,6 +431,8 @@ private struct PostDetailPreviewHost: View {
         .environmentObject(auth)
         .environmentObject(firestore)
         .environmentObject(feedViewModel)
+        .environmentObject(ResourceRecommendationManager.shared)
+        .environmentObject(ProfileManager.shared)
         .onAppear {
             firestore.applyPreviewPosts(PreviewSampleData.sampleFeedPosts)
             firestore.applyPreviewComments(PreviewSampleData.sampleComments)

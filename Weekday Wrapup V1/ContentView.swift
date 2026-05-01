@@ -212,6 +212,15 @@ struct ContentView: View {
                     Spacer()
 
                     Menu {
+                        if let uid = auth.currentUser?.id, !uid.isEmpty {
+                            NavigationLink {
+                                ProfileView(userId: uid, contextPost: nil)
+                                    .environmentObject(firestore)
+                                    .environmentObject(auth)
+                            } label: {
+                                Label("Edit profile", systemImage: "person.crop.circle")
+                            }
+                        }
                         NavigationLink {
                             HistoryView(entries: myHistoryEntries)
                         } label: {

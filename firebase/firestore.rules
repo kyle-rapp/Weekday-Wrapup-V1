@@ -33,6 +33,42 @@ service cloud.firestore {
           allow delete: if signedIn() && resource.data.userId == request.auth.uid;
         }
       }
+
+      /// Soft reactions: one doc per user per reaction `type` per post — id must be `{uid}__{type}`.
+      match /reactions/{reactionId} {
+        allow read: if signedIn();
+
+        function validSoftReactionType(t) {
+          return t == 'here_for_you' || t == 'proud' || t == 'thinking';
+        }
+
+        allow create: if signedIn()
+          && validSoftReactionType(request.resource.data.type)
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.keys().hasAll(['userId', 'type', 'createdAt'])
+          && reactionId == request.auth.uid + '__' + request.resource.data.type;
+
+        allow delete: if signedIn()
+          && resource.data.userId == request.auth.uid;
+
+        allow update: if false;
+      }
+    }
+
+    match /userReports/{reportId} {
+      allow create: if signedIn()
+        && request.resource.data.reporterId == request.auth.uid
+        && request.resource.data.keys().hasAll(['reporterId', 'reportedUserId', 'createdAt']);
+      allow read, update, delete: if false;
+    }
+
+    match /follows/{followId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.followerId == request.auth.uid
+        && request.resource.data.keys().hasAll(['followerId', 'followingId', 'createdAt']);
+      allow delete: if signedIn() && resource.data.followerId == request.auth.uid;
+      allow update: if false;
     }
 
     match /groups/{groupId} {
@@ -53,23 +89,38 @@ service cloud.firestore {
         && request.auth.uid == resource.data.ownerId;
     }
 
+    /// Top-level user document + subcollections. Reads: any signed-in user. Writes: only the owner document.
     match /users/{userId} {
+      // `read` = get + list for collections; authenticated members can read profiles.
       allow read: if signedIn();
-      allow write: if signedIn() && request.auth.uid == userId;
+      // Owner-only writes on the user root document (merge updates, display name, etc.).
+      allow create, update, delete: if signedIn() && request.auth.uid == userId;
 
       match /profile/{docId} {
         allow read: if signedIn();
-        allow write: if signedIn() && request.auth.uid == userId;
+        allow create, update, delete: if signedIn() && request.auth.uid == userId;
       }
 
       match /preferences/{docId} {
-        allow read: if signedIn();
-        allow write: if signedIn() && request.auth.uid == userId;
+        allow read: if signedIn() && request.auth.uid == userId;
+        allow create, update, delete: if signedIn() && request.auth.uid == userId;
       }
 
       match /recommendationFeedback/{docId} {
         allow read: if signedIn() && request.auth.uid == userId;
         allow create: if signedIn() && request.auth.uid == userId;
+      }
+
+      match /support/{docId} {
+        allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+      }
+
+      match /supportInbox/{docId} {
+        allow read: if signedIn() && request.auth.uid == userId;
+        allow create: if signedIn()
+          && request.resource.data.fromUserId == request.auth.uid
+          && request.resource.data.keys().hasAll(['fromUserId', 'type', 'createdAt']);
+        allow update, delete: if signedIn() && request.auth.uid == userId;
       }
     }
   }

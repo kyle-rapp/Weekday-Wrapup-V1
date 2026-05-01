@@ -81,7 +81,7 @@ struct FeedReactionRow: View {
             .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(selected ? Color.accentColor.opacity(0.18) : Color.orange.opacity(0.08))
+                    .fill(selected ? Color.accentColor.opacity(0.18) : FeedEmotionPalette.reactionSlotFill(for: livePost, selected: selected))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
