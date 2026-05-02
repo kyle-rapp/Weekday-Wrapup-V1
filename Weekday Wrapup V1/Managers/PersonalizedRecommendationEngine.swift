@@ -19,12 +19,15 @@ final class PersonalizedRecommendationEngine {
         weather: RecommendationWeatherHint = .neutral,
         feedbackRows: [(title: String, helpful: Bool)] = [],
         excludedTitlesLowercased: Set<String> = [],
+        memory: [String: RecommendationMemory] = [:],
+        habitInsights: [HabitInsight] = [],
         now: Date = Date()
     ) -> [Recommendation] {
         let e = emotion.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let level = max(1, min(10, intensity))
-        let hour = Calendar.current.component(.hour, from: now)
-        let isNight = hour >= 21 || hour <= 6
+        if history.count < 7 {
+            return coldStartRecommendations(emotion: e, intensity: level, preferences: preferences, weather: weather)
+        }
         let tagCounts = Self.helpfulTagCountsForSimilarMood(history: history, emotionHint: e)
         let mergedTags = Self.mergeTagSignals(explicit: tags, fromHistory: tagCounts)
 
@@ -259,10 +262,12 @@ final class PersonalizedRecommendationEngine {
             emotion: e,
             intensity: level,
             preferences: preferenceTags,
-            isNight: isNight,
-            weather: weather.rawValue == RecommendationWeatherHint.neutral.rawValue ? nil : weather.rawValue,
-            likedRecommendations: likedIds,
-            dislikedRecommendations: dislikedIds
+            likedRecommendations: Set(likedIds.map(\.uuidString)),
+            dislikedRecommendations: Set(dislikedIds.map(\.uuidString)),
+            memory: memory,
+            habitInsights: habitInsights,
+            currentTime: now,
+            weather: weather.rawValue == RecommendationWeatherHint.neutral.rawValue ? nil : weather.rawValue
         )
 
         let sorted = uniqueRecs
@@ -271,9 +276,12 @@ final class PersonalizedRecommendationEngine {
                 let v2 = Int(scoreRecommendation(rec, context: context) * 10)
                 return Candidate(score: base + v2, rec: rec)
             }
+            .filter { $0.score >= 10 }
             .sorted { $0.score > $1.score }
         let mixed = Self.pickMixedTypes(from: sorted, maxCount: 5)
-        if mixed.isEmpty {
+        let final = mixed.filter { shouldShow($0, context: context) }
+        let capped = Array(final.prefix(3))
+        if capped.isEmpty {
             return [
                 Recommendation(
                     title: "Check in again soon",
@@ -283,7 +291,54 @@ final class PersonalizedRecommendationEngine {
                 )
             ]
         }
-        return mixed
+        return capped
+    }
+
+    private func coldStartRecommendations(
+        emotion: String,
+        intensity: Int,
+        preferences: UserPreferences?,
+        weather: RecommendationWeatherHint
+    ) -> [Recommendation] {
+        var recs: [Recommendation] = []
+
+        if preferences?.meditates == true {
+            recs.append(Recommendation(title: "Two-minute breathing reset", reason: "You marked breathing/meditation as helpful.", action: "Breathe", type: .regulation, tags: ["calm"], emotionTargets: ["sad", "angry", "scared", "anxious"], intensityRange: 3...10))
+        }
+        if preferences?.journals == true {
+            recs.append(Recommendation(title: "Write three lines", reason: "You marked journaling as helpful.", action: "Write", type: .reflection, tags: ["journal"], emotionTargets: ["joyful", "peaceful", "powerful", "sad"], intensityRange: 1...10))
+        }
+        if preferences?.enjoysWalking == true && weather != .rainy {
+            recs.append(Recommendation(title: "Take a short walk", reason: "You marked walking as helpful.", action: "Walk", type: .action, tags: ["outdoor"], emotionTargets: ["angry", "sad", "anxious"], intensityRange: 1...8))
+        }
+        if preferences?.callsFriends == true {
+            recs.append(Recommendation(title: "Reach out to one person", reason: "You marked connection as helpful.", action: "Message", type: .connection, tags: ["connection"], emotionTargets: ["sad", "lonely", "scared"], intensityRange: 1...8))
+        }
+
+        if recs.isEmpty {
+            let tough = ["sad", "angry", "scared", "anxious", "frustrated", "hurt"].contains { emotion.contains($0) }
+            if tough {
+                recs.append(Recommendation(title: "Box breathing (1 round)", reason: "A calm default while we learn your patterns.", action: "Breathe", type: .regulation, tags: ["calm"], emotionTargets: ["sad", "angry", "scared"], intensityRange: 3...10))
+                recs.append(Recommendation(title: "5-4-3-2-1 grounding", reason: "Grounding can lower emotional overload quickly.", action: "Ground", type: .regulation, tags: ["calm"], emotionTargets: ["sad", "angry", "scared"], intensityRange: 5...10))
+            } else {
+                recs.append(Recommendation(title: "Write what caused this feeling", reason: "Capture what worked while the feeling is clear.", action: "Write", type: .reflection, tags: ["journal"], emotionTargets: ["joyful", "peaceful", "powerful"], intensityRange: 1...10))
+                recs.append(Recommendation(title: "Save what helped", reason: "Saving wins helps us personalize recommendations faster.", action: "Save", type: .reflection, tags: ["growth"], emotionTargets: ["joyful", "peaceful", "powerful"], intensityRange: 1...10))
+            }
+        }
+
+        let context = RecommendationContext(
+            emotion: emotion,
+            intensity: intensity,
+            preferences: [],
+            likedRecommendations: [],
+            dislikedRecommendations: [],
+            memory: [:],
+            habitInsights: [],
+            currentTime: Date(),
+            weather: weather.rawValue == RecommendationWeatherHint.neutral.rawValue ? nil : weather.rawValue
+        )
+        let ranked = rankedRecommendations(from: recs, context: context)
+        return Array(ranked.prefix(5))
     }
 
     private static func timeBonus(now: Date, type: RecommendationType) -> Int {

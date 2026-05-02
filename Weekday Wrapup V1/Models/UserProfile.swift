@@ -34,6 +34,9 @@ struct UserProfile: Codable, Equatable, Hashable {
     /// Soundtrack for the season — optional, shown on profile.
     var favoriteSong: String?
     var favoriteArtist: String?
+    var venmoUsername: String?
+    var showFavoriteSong: Bool?
+    var showVenmoUsername: Bool?
     /// `Public` / `Friends` / `Private` — client-side gating for sensitive sections.
     var profileVisibility: String?
 
@@ -53,6 +56,9 @@ struct UserProfile: Codable, Equatable, Hashable {
         prefersSupport: [String]? = nil,
         favoriteSong: String? = nil,
         favoriteArtist: String? = nil,
+        venmoUsername: String? = nil,
+        showFavoriteSong: Bool? = nil,
+        showVenmoUsername: Bool? = nil,
         profileVisibility: String? = nil
     ) {
         self.name = name
@@ -70,6 +76,9 @@ struct UserProfile: Codable, Equatable, Hashable {
         self.prefersSupport = prefersSupport
         self.favoriteSong = favoriteSong
         self.favoriteArtist = favoriteArtist
+        self.venmoUsername = venmoUsername
+        self.showFavoriteSong = showFavoriteSong
+        self.showVenmoUsername = showVenmoUsername
         self.profileVisibility = profileVisibility
     }
 

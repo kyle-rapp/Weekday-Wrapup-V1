@@ -4,6 +4,13 @@ import Foundation
 /// FILE: Models/PreviewSampleData.swift
 /// Static mock data for SwiftUI Previews (no Firebase).
 enum PreviewSampleData {
+    static let seededUsers: [FeedUser] = [
+        FeedUser(id: "preview-user-id", name: "Alex", streak: 4),
+        FeedUser(id: "user-alice", name: "Alice", streak: 5),
+        FeedUser(id: "user-bob", name: "Bob", streak: 2),
+        FeedUser(id: "user-clara", name: "Clara", streak: 10)
+    ]
+
     static let currentUser = AppUser(
         id: "preview-user-id",
         name: "Alex",
@@ -98,5 +105,7 @@ enum PreviewSampleData {
             createdAt: Date().addingTimeInterval(-172800)
         )
     ]
+
+    static let seededPosts: [FeedPost] = sampleFeedPosts + [previewUserWrapupPost]
 }
 #endif

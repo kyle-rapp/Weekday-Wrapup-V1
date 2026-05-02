@@ -6,6 +6,7 @@ import UIKit
 struct FeelingWheelView: View {
     @Binding var selectedEmotions: Set<String>
     @State private var selectedPrimaryIndex: Int? = nil
+    private let maxSecondarySelections = 5
 
     var body: some View {
         GeometryReader { geometry in
@@ -18,11 +19,15 @@ struct FeelingWheelView: View {
                     .fontWeight(.semibold)
                     .foregroundColor(.primary)
                     .multilineTextAlignment(.center)
+                Text("Tip: pick up to 3 that stand out (max 5).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 EmotionWheelCanvas(
                     wheelRadius: wheelRadius,
                     selectedEmotions: $selectedEmotions,
-                    selectedPrimaryIndex: $selectedPrimaryIndex
+                    selectedPrimaryIndex: $selectedPrimaryIndex,
+                    maxSecondarySelections: maxSecondarySelections
                 )
                 .frame(width: side, height: side)
             }
@@ -183,6 +188,7 @@ private struct EmotionWheelCanvas: View {
     let wheelRadius: CGFloat
     @Binding var selectedEmotions: Set<String>
     @Binding var selectedPrimaryIndex: Int?
+    let maxSecondarySelections: Int
 
     private var center: CGPoint { CGPoint(x: wheelRadius, y: wheelRadius) }
     private var layout: WheelLayout { WheelLayout(center: center, wheelRadius: wheelRadius) }
@@ -293,7 +299,13 @@ private struct EmotionWheelCanvas: View {
                             if selectedEmotions.contains(label) {
                                 selectedEmotions.remove(label)
                             } else {
-                                selectedEmotions.insert(label)
+                                let primary = WheelData.primaryOrder[primaryIndex]
+                                let secondaryCount = selectedEmotions.filter { item in
+                                    item.caseInsensitiveCompare(primary) != .orderedSame
+                                }.count
+                                if secondaryCount < maxSecondarySelections {
+                                    selectedEmotions.insert(label)
+                                }
                             }
                         }
                     }

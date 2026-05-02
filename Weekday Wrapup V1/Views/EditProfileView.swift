@@ -22,6 +22,9 @@ struct EditProfileView: View {
     @State private var pronouns: String
     @State private var relationshipStatus: String
     @State private var favoriteSong: String
+    @State private var venmoUsername: String
+    @State private var showFavoriteSong: Bool
+    @State private var showVenmoUsername: Bool
     @State private var interestsRaw: String
     @State private var wishlistLinks: [String]
     @State private var insightSummary: String
@@ -49,6 +52,9 @@ struct EditProfileView: View {
         _pronouns = State(initialValue: profile.pronouns ?? "")
         _relationshipStatus = State(initialValue: profile.relationshipStatus ?? "")
         _favoriteSong = State(initialValue: profile.favoriteSong ?? "")
+        _venmoUsername = State(initialValue: profile.venmoUsername ?? "")
+        _showFavoriteSong = State(initialValue: profile.showFavoriteSong ?? true)
+        _showVenmoUsername = State(initialValue: profile.showVenmoUsername ?? false)
         _interestsRaw = State(initialValue: (profile.interests ?? []).joined(separator: ", "))
         let links = details.wishlistLinks ?? profile.wishlistLinks ?? []
         _wishlistLinks = State(initialValue: links.isEmpty ? [""] : links)
@@ -84,6 +90,14 @@ struct EditProfileView: View {
 
                 Section("Favorite song") {
                     TextField("Favorite song", text: $favoriteSong)
+                    Toggle("Show on profile", isOn: $showFavoriteSong)
+                }
+
+                Section("Venmo (optional)") {
+                    TextField("@username", text: $venmoUsername)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Toggle("Show on profile", isOn: $showVenmoUsername)
                 }
 
                 Section("Interests") {
@@ -140,6 +154,12 @@ struct EditProfileView: View {
                             Text("No one").tag(SupportMode.privateMode)
                         }
                         .pickerStyle(.segmented)
+                        Toggle(isOn: Binding(
+                            get: { supportMode == .friendsOnly },
+                            set: { supportMode = $0 ? .friendsOnly : .open }
+                        )) {
+                            Text("Only from friends")
+                        }
 
                         Toggle(isOn: Binding(
                             get: { isSupportTodayEnabled },
@@ -170,6 +190,17 @@ struct EditProfileView: View {
                         Toggle("Allow messages", isOn: $allowMessages)
                         Toggle("Allow invites", isOn: $allowInvites)
                         Toggle("Allow gifts", isOn: $allowGifts)
+                        Toggle(isOn: Binding(
+                            get: { !allowMessages && allowInvites },
+                            set: { enabled in
+                                if enabled {
+                                    allowMessages = false
+                                    allowInvites = true
+                                }
+                            }
+                        )) {
+                            Text("No messages, just invites")
+                        }
                     }
                     .disabled(!allowSupport)
                     .opacity(allowSupport ? 1 : 0.55)
@@ -250,6 +281,9 @@ struct EditProfileView: View {
             prefersSupport: initialProfile.prefersSupport,
             favoriteSong: trimmed(favoriteSong).isEmpty ? nil : trimmed(favoriteSong),
             favoriteArtist: initialProfile.favoriteArtist,
+            venmoUsername: trimmed(venmoUsername).isEmpty ? nil : trimmed(venmoUsername),
+            showFavoriteSong: showFavoriteSong,
+            showVenmoUsername: showVenmoUsername,
             profileVisibility: initialProfile.profileVisibility
         )
 

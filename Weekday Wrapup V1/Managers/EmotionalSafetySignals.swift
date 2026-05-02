@@ -15,4 +15,15 @@ enum EmotionalSafetySignals {
             .lowercased()
         return triggerTokens.contains { blob.contains($0) }
     }
+
+    static func containsCrisisLanguage(_ text: String) -> Bool {
+        let blob = text.lowercased()
+        let phrases = [
+            "suicide",
+            "kill myself",
+            "don't want to live",
+            "dont want to live"
+        ]
+        return phrases.contains(where: { blob.contains($0) })
+    }
 }

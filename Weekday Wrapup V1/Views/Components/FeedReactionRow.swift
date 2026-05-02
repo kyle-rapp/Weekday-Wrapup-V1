@@ -20,7 +20,13 @@ struct FeedReactionRow: View {
     @EnvironmentObject private var firestore: FirestoreManager
 
     private var rowEmojis: [String] {
-        ReactionManager.emotionBasedEmojis(for: livePost)
+        Array(
+            EmojiRecommender.emojis(
+                emotion: livePost.primaryEmotion,
+                intensity: livePost.intensity ?? 5
+            )
+            .prefix(4)
+        )
     }
 
     var body: some View {

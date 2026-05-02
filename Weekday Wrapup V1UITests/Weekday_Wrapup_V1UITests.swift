@@ -24,11 +24,49 @@ final class Weekday_Wrapup_V1UITests: XCTestCase {
 
     @MainActor
     func testExample() throws {
-        // UI tests must launch the application that they test.
         let app = XCUIApplication()
+        app.launchArguments.append("--uitest-mode")
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
+        let feedTab = app.tabBars.buttons["Feed"]
+        XCTAssertTrue(feedTab.waitForExistence(timeout: 8))
+        feedTab.tap()
+
+        let shareTab = app.tabBars.buttons["Share"]
+        XCTAssertTrue(shareTab.exists)
+        shareTab.tap()
+
+        let learnTab = app.tabBars.buttons["Learn"]
+        XCTAssertTrue(learnTab.exists)
+        learnTab.tap()
+    }
+
+    @MainActor
+    func testProfileSaveFlowAccessible() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--uitest-mode")
+        app.launch()
+
+        app.tabBars.buttons["Feed"].tap()
+        let profileButton = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Profile'")).firstMatch
+        if !profileButton.waitForExistence(timeout: 4) {
+            throw XCTSkip("Profile entry point not visible in current auth state.")
+        }
+        profileButton.tap()
+    }
+
+    @MainActor
+    func testRecommendationsPathReachable() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--uitest-mode")
+        app.launch()
+
+        let growTab = app.tabBars.buttons["Grow"]
+        guard growTab.waitForExistence(timeout: 6) else {
+            throw XCTSkip("Grow tab not available.")
+        }
+        growTab.tap()
+        XCTAssertTrue(app.staticTexts["Recommended for you"].waitForExistence(timeout: 5))
     }
 
     @MainActor

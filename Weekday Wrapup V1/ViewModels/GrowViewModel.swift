@@ -19,6 +19,10 @@ final class GrowViewModel: ObservableObject {
 
     /// Recent thumbs on recommendations (from Firestore).
     @Published private(set) var recommendationFeedbackRows: [(title: String, helpful: Bool)] = []
+    @Published private(set) var recommendationMemory: [String: RecommendationMemory] = [:]
+    @Published private(set) var habitSignals: [HabitSignal] = []
+    @Published private(set) var habitInsights: [HabitInsight] = []
+    @Published private(set) var habitStreaks: [HabitStreak] = []
 
     private let recommendationEngine = PersonalizedRecommendationEngine()
     private var recommendationCacheSignature: String = ""
@@ -36,6 +40,24 @@ final class GrowViewModel: ObservableObject {
     func updateRecommendationFeedback(_ rows: [(title: String, helpful: Bool)]) {
         recommendationFeedbackRows = rows
         invalidateRecommendationCache()
+    }
+
+    func updateRecommendationMemory(_ memory: [String: RecommendationMemory]) {
+        recommendationMemory = memory
+        invalidateRecommendationCache()
+    }
+
+    func updateHabitSignals(_ signals: [HabitSignal]) {
+        habitSignals = signals.sorted { $0.createdAt > $1.createdAt }
+        habitInsights = HabitReinforcementEngine.buildHabitInsights(signals: habitSignals)
+        habitStreaks = HabitReinforcementEngine.buildHabitStreaks(signals: habitSignals)
+        invalidateRecommendationCache()
+    }
+
+    func mergeDerivedHabitSignals(userId: String) {
+        let derived = HabitReinforcementEngine.deriveSignals(from: entries, userId: userId)
+        let merged = Array(Set(habitSignals + derived)).sorted { $0.createdAt > $1.createdAt }
+        updateHabitSignals(merged)
     }
 
     func invalidateRecommendationCache() {
@@ -57,7 +79,9 @@ final class GrowViewModel: ObservableObject {
             "\(history.count)",
             selectedEmotion ?? "_all",
             fb.map { "\($0.0)|\($0.1)" }.joined(separator: ";"),
-            excluded.sorted().joined(separator: ",")
+            excluded.sorted().joined(separator: ","),
+            recommendationMemory.keys.sorted().joined(separator: ","),
+            habitInsights.map { "\($0.actionType):\($0.improvementScore)" }.joined(separator: ",")
         ].joined(separator: "|")
 
         guard sig != recommendationCacheSignature else { return }
@@ -71,7 +95,9 @@ final class GrowViewModel: ObservableObject {
             history: history,
             weather: weather,
             feedbackRows: fb,
-            excludedTitlesLowercased: excluded
+            excludedTitlesLowercased: excluded,
+            memory: recommendationMemory,
+            habitInsights: habitInsights
         )
         RecentRecommendationDedupe.recordShownTitles(personalizedRecommendations.map(\.title))
     }
@@ -122,6 +148,18 @@ final class GrowViewModel: ObservableObject {
     var topHelpfulTagLine: String? {
         guard let top = topHelpfulTag else { return nil }
         return "You feel better most often after: \(top)"
+    }
+
+    var topHabitInsightLine: String? {
+        guard let first = habitInsights.first else { return nil }
+        let action = first.actionType.replacingOccurrences(of: "_", with: " ")
+        return "You tend to feel better after \(action)."
+    }
+
+    var topHabitImprovementLine: String? {
+        guard let first = habitInsights.first, first.usageCount > 0 else { return nil }
+        let action = first.actionType.replacingOccurrences(of: "_", with: " ")
+        return "You've improved \(first.usageCount) times after \(action)."
     }
 
     var helpfulTagCounts: [String: Int] {

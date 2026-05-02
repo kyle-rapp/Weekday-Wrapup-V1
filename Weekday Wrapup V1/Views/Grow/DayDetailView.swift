@@ -18,6 +18,13 @@ struct DayDetailCompact: View {
                 Text(entry.date, style: .date)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(AppTheme.colors.textPrimary)
+                if entry.manualEntry {
+                    Text("Manual")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(AppTheme.colors.mist))
+                }
                 Spacer()
                 Text("Intensity \(entry.intensity.map(String.init) ?? "—")")
                     .font(.caption.weight(.medium))
@@ -108,6 +115,12 @@ struct DayDetailView: View {
                     Text("Intensity: \(entry.intensity.map(String.init) ?? "—")")
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.colors.textSecondary)
+
+                    if entry.manualEntry {
+                        Text("Logged manually from calendar")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.colors.textSecondary)
+                    }
 
                     if let tags = entry.helpfulTags, !tags.isEmpty {
                         FlowTagRow(title: "What helped", tags: tags)

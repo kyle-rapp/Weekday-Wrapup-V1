@@ -25,6 +25,8 @@ struct CheckInData: Identifiable {
     let intensity: Int?
     /// Optional note: what helped last time (shown on repeat emotions).
     let whatHelped: String?
+    /// True when a check-in was added directly from the calendar (not full wrapup flow).
+    let manualEntry: Bool
     /// Preset tags: what helped this check-in (saved on post).
     let helpfulTags: [String]?
     /// When posting with group visibility, target group ids.
@@ -35,7 +37,7 @@ struct CheckInData: Identifiable {
          whoopsText: String, poopsText: String, weeklyGoal: String, monthlyGoal: String,
          profileImage: Image? = nil, checkInVideoURL: URL? = nil, drawingImage: UIImage? = nil,
          visibility: PostVisibility = .public, date: Date = Date(), intensity: Int? = nil,
-         whatHelped: String? = nil, helpfulTags: [String]? = nil, sharedGroupIds: [String]? = nil,
+         whatHelped: String? = nil, manualEntry: Bool = false, helpfulTags: [String]? = nil, sharedGroupIds: [String]? = nil,
          selectedEmotionsOrdered: [String]? = nil,
          id: String? = nil) {
         self.id = id ?? UUID().uuidString
@@ -69,6 +71,7 @@ struct CheckInData: Identifiable {
         self.date = date
         self.intensity = intensity
         self.whatHelped = whatHelped
+        self.manualEntry = manualEntry
         self.helpfulTags = helpfulTags
         self.sharedGroupIds = sharedGroupIds
     }
@@ -115,6 +118,7 @@ struct CheckInData: Identifiable {
             date: post.createdAt ?? Date(),
             intensity: post.intensity,
             whatHelped: post.whatHelped,
+            manualEntry: post.manualEntry,
             helpfulTags: post.helpfulTags.isEmpty ? nil : post.helpfulTags,
             sharedGroupIds: post.sharedGroupIds.isEmpty ? nil : post.sharedGroupIds,
             selectedEmotionsOrdered: post.selectedEmotions,

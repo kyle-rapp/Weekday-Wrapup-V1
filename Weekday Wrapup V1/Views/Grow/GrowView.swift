@@ -16,8 +16,10 @@ struct GrowView: View {
     @State private var showPreferencesOnboarding = false
     @State private var recommendationFeedback: [UUID: Bool] = [:]
     @State private var recommendationFeedbackSubmitting: Set<UUID> = []
+    @State private var shownRecommendationIdsThisSession: Set<String> = []
     @State private var safetyCardDismissed = false
     @State private var therapyResourcesDismissed = false
+    @State private var showManualEntrySheet = false
 
     var body: some View {
         ScrollView {
@@ -27,13 +29,14 @@ struct GrowView: View {
                 dailyInsightCard
 
                 helpfulTagInsightCard
+                habitReinforcementCard
 
                 patternsSection
 
                 outdoorContextSection
 
                 if showGrowSafetyPanel {
-                    EmotionalSafetySupportCard(resources: growSafetyResources) {
+                    EmotionalSafetySupportCard(resources: growSafetyResources, showCrisisLine: growShowCrisisLine) {
                         safetyCardDismissed = true
                     }
                 }
@@ -68,6 +71,8 @@ struct GrowView: View {
         .navigationBarTitleDisplayMode(.large)
         .task(id: auth.currentUser?.id) {
             await loadRecommendationFeedback()
+            await loadRecommendationMemory()
+            await loadHabitSignals()
             await loadUserPreferences()
             await MainActor.run {
                 guard viewModel.userPreferences == nil,
@@ -88,9 +93,11 @@ struct GrowView: View {
         .onChange(of: auth.currentUser?.id) { _, _ in
             recommendationFeedback = [:]
             recommendationFeedbackSubmitting = []
+            shownRecommendationIdsThisSession = []
             safetyCardDismissed = false
             therapyResourcesDismissed = false
             syncEntriesFromFirestore()
+            Task { await loadHabitSignals() }
         }
         .onChange(of: viewModel.selectedEmotion) { _, _ in
             calendarViewModel.clearSelection()
@@ -98,6 +105,9 @@ struct GrowView: View {
         }
         .onChange(of: outdoorSuggestions.weatherHint) { _, _ in
             refreshRecommendations()
+        }
+        .onChange(of: viewModel.personalizedRecommendations) { _, _ in
+            Task { await recordShownRecommendationsIfNeeded() }
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -118,6 +128,13 @@ struct GrowView: View {
                     Task { await loadUserPreferences() }
                 }
         }
+        .sheet(isPresented: $showManualEntrySheet) {
+            if let date = calendarViewModel.selectedCalendarDate {
+                ManualCalendarEntrySheetView(date: date) { emotion, intensity, note in
+                    Task { await saveManualCalendarEntry(date: date, emotion: emotion, intensity: intensity, note: note) }
+                }
+            }
+        }
     }
 
     private func loadRecommendationFeedback() async {
@@ -135,13 +152,30 @@ struct GrowView: View {
         }
     }
 
+    private func loadRecommendationMemory() async {
+        guard let uid = auth.currentUser?.id else {
+            await MainActor.run {
+                viewModel.updateRecommendationMemory([:])
+                refreshRecommendations()
+            }
+            return
+        }
+        let memory = await firestore.fetchRecommendationMemory(userId: uid)
+        await MainActor.run {
+            viewModel.updateRecommendationMemory(memory)
+            refreshRecommendations()
+        }
+    }
+
     private var showGrowSafetyPanel: Bool {
         if safetyCardDismissed { return false }
         guard let e = viewModel.entries.sorted(by: { $0.date > $1.date }).first else { return false }
         let emotion = e.firstSelectedEmotionLabel
         let keywords = (e.helpfulTags ?? []).map { $0.lowercased() }
         let extra = e.selectedEmotions.map { $0.lowercased() }.joined(separator: " ")
+        let crisisText = [e.emotionalInsight, e.whoopsText, e.whatHelped ?? ""].joined(separator: " ")
         return EmotionalSafetySignals.signalsSupport(emotion: emotion, keywords: keywords, extraText: extra)
+            || EmotionalSafetySignals.containsCrisisLanguage(crisisText)
     }
 
     private var growSafetyResources: [ResourceRecommendation] {
@@ -169,9 +203,18 @@ struct GrowView: View {
         )
     }
 
+    private var growShowCrisisLine: Bool {
+        guard let e = viewModel.entries.sorted(by: { $0.date > $1.date }).first else { return false }
+        let text = [e.emotionalInsight, e.whoopsText, e.whatHelped ?? ""].joined(separator: " ")
+        return EmotionalSafetySignals.containsCrisisLanguage(text)
+    }
+
     private func syncEntriesFromFirestore() {
         let list = firestore.wrapupHistoryEntries(forUserId: auth.currentUser?.id)
         viewModel.syncEntries(list)
+        if let uid = auth.currentUser?.id {
+            viewModel.mergeDerivedHabitSignals(userId: uid)
+        }
         refreshRecommendations()
     }
 
@@ -192,6 +235,17 @@ struct GrowView: View {
             viewModel.setUserPreferences(prefs)
             refreshRecommendations()
         }
+    }
+
+    private func loadHabitSignals() async {
+        guard let uid = auth.currentUser?.id else {
+            await MainActor.run { viewModel.updateHabitSignals([]) }
+            return
+        }
+        let fetched = await firestore.fetchHabitSignals(userId: uid)
+        let derived = HabitReinforcementEngine.deriveSignals(from: viewModel.entries, userId: uid)
+        let merged = Array(Set(fetched + derived)).sorted { $0.createdAt > $1.createdAt }
+        await MainActor.run { viewModel.updateHabitSignals(merged) }
     }
 
     private func submitFeedback(_ rec: Recommendation, helpful: Bool) async {
@@ -225,7 +279,13 @@ struct GrowView: View {
                 type: rec.type,
                 helpful: v
             )
+            if v {
+                try await firestore.recordRecommendationAccepted(userId: uid, recommendationId: rec.id.uuidString)
+            } else {
+                try await firestore.recordRecommendationDismissed(userId: uid, recommendationId: rec.id.uuidString)
+            }
             await loadRecommendationFeedback()
+            await loadRecommendationMemory()
             await MainActor.run { recommendationFeedbackSubmitting.remove(rec.id) }
         } catch {
             print("⚠️ recommendation feedback: \(error.localizedDescription)")
@@ -237,6 +297,27 @@ struct GrowView: View {
                 }
                 recommendationFeedbackSubmitting.remove(rec.id)
             }
+        }
+    }
+
+    private func recordShownRecommendationsIfNeeded() async {
+        guard let uid = auth.currentUser?.id else { return }
+        let recIds = viewModel.personalizedRecommendations.map { $0.id.uuidString }
+        let pending = recIds.filter { !shownRecommendationIdsThisSession.contains($0) }
+        guard !pending.isEmpty else { return }
+
+        var wrote = false
+        for recId in pending {
+            do {
+                try await firestore.recordRecommendationShown(userId: uid, recommendationId: recId)
+                await MainActor.run { shownRecommendationIdsThisSession.insert(recId) }
+                wrote = true
+            } catch {
+                print("⚠️ recommendation shown memory: \(error.localizedDescription)")
+            }
+        }
+        if wrote {
+            await loadRecommendationMemory()
         }
     }
 
@@ -297,6 +378,21 @@ struct GrowView: View {
         }
     }
 
+    private var habitReinforcementCard: some View {
+        Group {
+            if let headline = viewModel.topHabitInsightLine {
+                InsightCardView(
+                    title: "What's helping you most",
+                    bodyText: [headline, viewModel.topHabitImprovementLine].compactMap { $0 }.joined(separator: "\n"),
+                    icon: "repeat",
+                    backgroundFill: AppTheme.colors.ocean.opacity(0.15),
+                    backgroundOpacity: 1,
+                    strokeOpacity: 0.06
+                )
+            }
+        }
+    }
+
     private var emotionFilterBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
@@ -318,13 +414,45 @@ struct GrowView: View {
 
     private var calendarDayDetailPanel: some View {
         Group {
-            if let date = calendarViewModel.selectedCalendarDate,
-               let entry = viewModel.entry(on: date) {
-                DayDetailCompact(entry: entry)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            if let date = calendarViewModel.selectedCalendarDate {
+                if let entry = viewModel.entry(on: date) {
+                    DayDetailCompact(entry: entry)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else {
+                    manualEntryPrompt(date: date)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: calendarViewModel.selectedCalendarDate?.timeIntervalSince1970 ?? 0)
+    }
+
+    private func manualEntryPrompt(date: Date) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(date, style: .date)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.colors.textPrimary)
+            Text("No check-in yet for this day.")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.colors.textSecondary)
+            Button {
+                showManualEntrySheet = true
+            } label: {
+                Label("Add manual entry", systemImage: "plus.circle.fill")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(AppTheme.colors.background)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
     }
 
     // MARK: Patterns
@@ -410,6 +538,39 @@ struct GrowView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func saveManualCalendarEntry(date: Date, emotion: String, intensity: Int, note: String?) async {
+        guard let uid = auth.currentUser?.id else { return }
+        let rawName = auth.currentUser?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let authorName = rawName.isEmpty ? "Member" : rawName
+        let week = Calendar.current.component(.weekOfYear, from: date)
+        let emoji = ReactionManager.emojiForEmotionLabel(emotion)
+        let entry = CheckInData(
+            userName: authorName,
+            astrologySign: "",
+            weekNumber: week,
+            weeklyEmoji: emoji,
+            checkInImage: nil,
+            selectedEmotions: [emotion],
+            emotionalInsight: note ?? "",
+            whoopsText: "",
+            poopsText: "",
+            weeklyGoal: "",
+            monthlyGoal: "",
+            visibility: .private,
+            date: date,
+            intensity: max(1, min(10, intensity)),
+            whatHelped: note,
+            manualEntry: true,
+            selectedEmotionsOrdered: [emotion]
+        )
+        let ok = await firestore.createPost(from: entry, authorId: uid, authorName: authorName)
+        if ok {
+            syncEntriesFromFirestore()
+        } else {
+            print("⚠️ manual calendar entry save failed")
+        }
     }
 }
 

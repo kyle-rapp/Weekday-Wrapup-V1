@@ -225,18 +225,30 @@ struct LearnView: View {
 
     private func actionSuggestions(for emotion: String) -> [String] {
         let e = emotion.lowercased()
+        let tough = ["sad", "angry", "mad", "scared", "anxious", "frustrated", "lonely", "hurt"]
+        let positive = ["joyful", "joy", "peaceful", "peace", "powerful", "proud", "content", "hopeful", "happy"]
 
-        if ["anxious", "scared", "insecure"].contains(e) {
-            return ["Try box breathing for 2 minutes", "Write down what's worrying you", "Focus on what you can control"]
+        if tough.contains(where: { e.contains($0) }) {
+            return [
+                "Try box breathing for two minutes",
+                "Name the emotion out loud",
+                "Do 5-4-3-2-1 grounding",
+                "Ask: what do I need right now?"
+            ]
         }
-        if ["angry", "frustrated", "mad"].contains(e) {
-            return ["Take a short walk", "Step away before reacting", "Write what triggered you"]
-        }
-        if ["sad", "lonely"].contains(e) {
-            return ["Text someone you trust", "Listen to music that matches your mood", "Rest without pressure"]
+        if positive.contains(where: { e.contains($0) }) {
+            return [
+                "Write what caused this feeling",
+                "Save what helped",
+                "Repeat this intentionally tomorrow"
+            ]
         }
 
-        return ["Pause and take 3 slow breaths", "Check in with your body", "Name what you need right now"]
+        return [
+            "Pause for three slower breaths",
+            "Name what your body feels",
+            "Pick one kind next step"
+        ]
     }
 
     // MARK: Section 4 — Education (three cards)

@@ -128,7 +128,92 @@ final class FirestoreManager: ObservableObject {
 
     private func applyPostVisibilityFilter() {
         let uid = Auth.auth().currentUser?.uid
-        posts = allPostsRaw.filter { Self.postMeetsVisibility($0, viewerId: uid, joinedGroupIds: joinedGroupIds) }
+        let visible = allPostsRaw.filter { Self.postMeetsVisibility($0, viewerId: uid, joinedGroupIds: joinedGroupIds) }
+        posts = rankPostsForFeed(visible, viewerId: uid)
+    }
+
+    /// Emotion-aware ranked feed with overload caps.
+    private func rankPostsForFeed(_ items: [FeedPost], viewerId: String?) -> [FeedPost] {
+        guard let viewerId else {
+            return items.sorted { ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) }
+        }
+        let context = FeedScoreContext(
+            currentUserId: viewerId,
+            followingIds: followingIds,
+            now: Date()
+        )
+        let ranked = items
+            .map { ($0, scorePost($0, context: context)) }
+            .sorted { lhs, rhs in
+                if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+                return (lhs.0.createdAt ?? .distantPast) > (rhs.0.createdAt ?? .distantPast)
+            }
+            .map(\.0)
+        return applyFeedOverloadCaps(ranked)
+    }
+
+    func scorePost(_ post: FeedPost, context: FeedScoreContext) -> Double {
+        var score = 0.0
+
+        if context.followingIds.contains(post.authorId) {
+            score += 5
+        }
+
+        if let intensity = post.intensity {
+            if intensity >= 8 {
+                score += 6
+            } else if intensity >= 6 {
+                score += 3
+            }
+        }
+
+        let toughEmotions = ["sad", "anxious", "overwhelmed", "lonely"]
+        if toughEmotions.contains(where: { post.primaryEmotion.lowercased().contains($0) }) {
+            score += 4
+        }
+
+        score += Double(post.likeCount) * 0.5
+        score += Double(post.commentCount) * 1.2
+
+        let createdAt = post.createdAt ?? .distantPast
+        let hours = context.now.timeIntervalSince(createdAt) / 3600
+        score -= hours * 0.8
+
+        if post.tags.contains(where: { $0.caseInsensitiveCompare("milestone") == .orderedSame }) {
+            score += 8
+        }
+
+        return score
+    }
+
+    private func applyFeedOverloadCaps(_ ranked: [FeedPost]) -> [FeedPost] {
+        var output: [FeedPost] = []
+        var queue = ranked
+        var consecutiveHeavy = 0
+
+        while !queue.isEmpty {
+            let next = queue.removeFirst()
+            let isHeavy = isHeavyEmotionalPost(next)
+            if isHeavy && consecutiveHeavy >= 2 {
+                if let idx = queue.firstIndex(where: { !isHeavyEmotionalPost($0) }) {
+                    let lighter = queue.remove(at: idx)
+                    output.append(lighter)
+                    consecutiveHeavy = 0
+                    queue.insert(next, at: 0)
+                    continue
+                }
+            }
+            output.append(next)
+            consecutiveHeavy = isHeavy ? consecutiveHeavy + 1 : 0
+        }
+        return output
+    }
+
+    private func isHeavyEmotionalPost(_ post: FeedPost) -> Bool {
+        let intensityHeavy = (post.intensity ?? 0) >= 8
+        let tough = ["sad", "anxious", "overwhelmed", "lonely"]
+            .contains(where: { post.primaryEmotion.lowercased().contains($0) })
+        return intensityHeavy || tough
     }
 
     /// Feed visibility: public / friends-style posts for all; private = author only; groups = author + shared group members.
@@ -777,7 +862,7 @@ final class FirestoreManager: ObservableObject {
             "selectedEmotions": checkIn.selectedEmotionsOrdered.isEmpty
                 ? Array(checkIn.selectedEmotions).sorted()
                 : checkIn.selectedEmotionsOrdered,
-            "createdAt": FieldValue.serverTimestamp(),
+            "createdAt": checkIn.manualEntry ? Timestamp(date: checkIn.date) : FieldValue.serverTimestamp(),
             "likeCount": 0,
             "likedBy": [] as [String],
             "reactions": reactionsPayload,
@@ -785,6 +870,7 @@ final class FirestoreManager: ObservableObject {
             "reactionUsers": [:] as [String: String],
             "visibility": checkIn.visibility.rawValue,
             "commentCount": 0,
+            "manualEntry": checkIn.manualEntry,
             "softSupportCounts": Dictionary(uniqueKeysWithValues: SoftSupportReactionKind.allCases.map { ($0.rawValue, 0) }),
             "softSupportByUser": [:] as [String: [String]]
         ]
@@ -1086,6 +1172,112 @@ final class FirestoreManager: ObservableObject {
             }
         } catch {
             print("⚠️ fetchRecommendationFeedbackSummary: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    private func recommendationMemoryRef(userId: String, recommendationId: String) -> DocumentReference {
+        db.collection("users")
+            .document(userId)
+            .collection("recommendationMemory")
+            .document(recommendationId)
+    }
+
+    private func habitSignalsRef(userId: String) -> CollectionReference {
+        db.collection("users")
+            .document(userId)
+            .collection("habitSignals")
+    }
+
+    func fetchRecommendationMemory(userId: String, limit: Int = 300) async -> [String: RecommendationMemory] {
+        if Self.isXcodePreview { return [:] }
+        do {
+            let snap = try await db.collection("users").document(userId).collection("recommendationMemory")
+                .limit(to: limit)
+                .getDocuments()
+            var out: [String: RecommendationMemory] = [:]
+            for doc in snap.documents {
+                do {
+                    let memory = try RecommendationMemory.fromFirestoreDictionary(doc.data(), fallbackRecommendationId: doc.documentID)
+                    out[doc.documentID] = memory
+                } catch {
+                    print("⚠️ recommendation memory decode [\(doc.documentID)]: \(error.localizedDescription)")
+                }
+            }
+            return out
+        } catch {
+            print("⚠️ fetchRecommendationMemory: \(error.localizedDescription)")
+            return [:]
+        }
+    }
+
+    private func updateRecommendationMemory(
+        userId: String,
+        recommendationId: String,
+        mutate: (inout RecommendationMemory) -> Void
+    ) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        try await runWrite(successLog: "Recommendation memory updated") {
+            let ref = self.recommendationMemoryRef(userId: userId, recommendationId: recommendationId)
+            let snap = try await ref.getDocument()
+            var memory: RecommendationMemory
+            if let data = snap.data() {
+                memory = (try? RecommendationMemory.fromFirestoreDictionary(data, fallbackRecommendationId: recommendationId))
+                    ?? RecommendationMemory(recommendationId: recommendationId)
+            } else {
+                memory = RecommendationMemory(recommendationId: recommendationId)
+            }
+            mutate(&memory)
+            let payload = try memory.asFirestoreDictionary()
+            try await ref.setData(payload, merge: true)
+        }
+    }
+
+    func recordRecommendationShown(userId: String, recommendationId: String) async throws {
+        try await updateRecommendationMemory(userId: userId, recommendationId: recommendationId) { memory in
+            memory.timesShown += 1
+            memory.lastShownAt = Date()
+        }
+    }
+
+    func recordRecommendationAccepted(userId: String, recommendationId: String) async throws {
+        try await updateRecommendationMemory(userId: userId, recommendationId: recommendationId) { memory in
+            memory.timesAccepted += 1
+            memory.streakAccepted += 1
+            memory.lastAcceptedAt = Date()
+        }
+    }
+
+    func recordRecommendationDismissed(userId: String, recommendationId: String) async throws {
+        try await updateRecommendationMemory(userId: userId, recommendationId: recommendationId) { memory in
+            memory.timesDismissed += 1
+            memory.streakAccepted = 0
+        }
+    }
+
+    func saveHabitSignal(_ signal: HabitSignal, userId: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        try await runWrite(successLog: "Habit signal saved") {
+            let payload = try signal.asFirestoreDictionary()
+            try await self.habitSignalsRef(userId: userId).document(signal.id.uuidString).setData(payload, merge: true)
+        }
+    }
+
+    func fetchHabitSignals(userId: String, limit: Int = 180) async -> [HabitSignal] {
+        if Self.isXcodePreview { return [] }
+        do {
+            let snap = try await habitSignalsRef(userId: userId)
+                .order(by: "createdAt", descending: true)
+                .limit(to: limit)
+                .getDocuments()
+            return snap.documents.compactMap { doc in
+                let sanitized = sanitizeFirestoreForJSON(doc.data())
+                guard JSONSerialization.isValidJSONObject(sanitized),
+                      let obj = sanitized as? [String: Any] else { return nil }
+                return try? HabitSignal.fromFirestoreDictionary(obj)
+            }
+        } catch {
+            print("⚠️ fetchHabitSignals: \(error.localizedDescription)")
             return []
         }
     }

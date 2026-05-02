@@ -11,7 +11,12 @@ struct PreferencesOnboardingView: View {
     @State private var step = 0
     private let totalSteps = 4
 
-    // Step 0 — what helps
+    // Step 0 — immediate check-in
+    @State private var currentEmotion = "Sad"
+    @State private var currentIntensity = 5.0
+    private let immediateEmotionOptions = ["Sad", "Angry", "Scared", "Joyful", "Peaceful", "Powerful"]
+
+    // Step 1 — what helps (2-3 taps)
     @State private var enjoysWalking = false
     @State private var journals = false
     @State private var meditates = false
@@ -45,9 +50,9 @@ struct PreferencesOnboardingView: View {
 
                 Group {
                     switch step {
-                    case 0: stepWhatHelps
-                    case 1: stepJoy
-                    case 2: stepStress
+                    case 0: stepImmediateCheckIn
+                    case 1: stepWhatHelps
+                    case 2: stepValueNow
                     default: stepOptional
                     }
                 }
@@ -87,11 +92,30 @@ struct PreferencesOnboardingView: View {
 
     private var stepTitle: String {
         switch step {
-        case 0: return "What helps you feel better?"
-        case 1: return "What do you enjoy? (pick up to 5)"
-        case 2: return "What’s been stressing you? (up to 5)"
-        default: return "Optional — only if you’re comfortable"
+        case 0: return "Step 1: Quick check-in"
+        case 1: return "Step 2: What usually helps? (2–3 taps)"
+        case 2: return "Step 3: Here’s something for right now"
+        default: return "Step 4: Optional deeper profile"
         }
+    }
+
+    private var stepImmediateCheckIn: some View {
+        Form {
+            Section("How do you feel right now?") {
+                Picker("Emotion", selection: $currentEmotion) {
+                    ForEach(immediateEmotionOptions, id: \.self) { item in
+                        Text(item).tag(item)
+                    }
+                }
+            }
+            Section("Intensity") {
+                Slider(value: $currentIntensity, in: 1...10, step: 1)
+                Text("\(Int(currentIntensity))/10")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .scrollContentBackground(.hidden)
     }
 
     private var stepWhatHelps: some View {
@@ -102,6 +126,10 @@ struct PreferencesOnboardingView: View {
                 helpToggle("Journaling", "book.pages", $journals)
                 helpToggle("Calling someone", "phone", $callsFriends)
                 helpToggle("Meditation / breath", "wind", $meditates)
+                Text("Choose 2-3 for now. You can edit later.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
             }
             .padding()
         }
@@ -110,7 +138,11 @@ struct PreferencesOnboardingView: View {
     private func helpToggle(_ title: String, _ icon: String, _ on: Binding<Bool>) -> some View {
         Button {
             UIImpactFeedbackGenerator(style: .soft).impactOccurred()
-            on.wrappedValue.toggle()
+            if on.wrappedValue {
+                on.wrappedValue = false
+            } else if selectedHelpCount < 3 {
+                on.wrappedValue = true
+            }
         } label: {
             HStack(spacing: 14) {
                 Image(systemName: icon)
@@ -131,6 +163,26 @@ struct PreferencesOnboardingView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+    private var stepValueNow: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Here’s something that might help right now")
+                .font(.title3.bold())
+                .foregroundStyle(AppTheme.colors.textPrimary)
+            Text(quickActionHint)
+                .font(.body)
+                .foregroundStyle(AppTheme.colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(AppTheme.colors.background)
+                )
+            Spacer(minLength: 0)
+        }
+        .padding()
     }
 
     private var stepJoy: some View {
@@ -263,10 +315,27 @@ struct PreferencesOnboardingView: View {
 
     private var canAdvanceFromCurrentStep: Bool {
         switch step {
-        case 1: return !selectedJoy.isEmpty
-        case 2: return !selectedStress.isEmpty
+        case 1: return selectedHelpCount >= 1
         default: return true
         }
+    }
+
+    private var selectedHelpCount: Int {
+        [enjoysWalking, journals, meditates, callsFriends, enjoysMusic].filter { $0 }.count
+    }
+
+    private var quickActionHint: String {
+        let e = currentEmotion.lowercased()
+        let tough = ["sad", "angry", "scared"].contains { e.contains($0) }
+        if tough {
+            if meditates { return "Try one round of box breathing, then name this emotion in one sentence." }
+            if callsFriends { return "Send one low-pressure text to someone safe, then ask what you need right now." }
+            return "Start with grounding: name 5 things you can see, then ask what you need right now."
+        }
+        if journals {
+            return "Write what caused this feeling and one thing you want to repeat intentionally."
+        }
+        return "Capture what helped today so you can repeat it when this emotion comes back."
     }
 
     private func buildPreferences() -> UserPreferences {

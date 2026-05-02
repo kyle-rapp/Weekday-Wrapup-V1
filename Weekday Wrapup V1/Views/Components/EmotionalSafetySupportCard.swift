@@ -5,6 +5,7 @@ import SwiftUI
 
 struct EmotionalSafetySupportCard: View {
     let resources: [ResourceRecommendation]
+    var showCrisisLine: Bool = false
     var onDismiss: () -> Void
 
     @State private var showReachOutTips = false
@@ -39,6 +40,21 @@ struct EmotionalSafetySupportCard: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
+                if showCrisisLine {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Call or text 988 (US Suicide & Crisis Lifeline)")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.red)
+                        if let crisisURL = URL(string: "tel:988") {
+                            Link("Call 988 now", destination: crisisURL)
+                                .font(.caption.weight(.semibold))
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.red.opacity(0.08)))
+                }
+
                 Button {
                     showReachOutTips = true
                 } label: {

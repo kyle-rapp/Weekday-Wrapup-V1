@@ -53,6 +53,10 @@ struct FeedPost: Identifiable, Equatable, Hashable {
     var whatHelped: String?
     /// Multi-select “what helped” tags from check-in (newer posts).
     var helpfulTags: [String]
+    /// Optional semantic tags used by ranking (e.g. "milestone").
+    var tags: [String]
+    /// Manual calendar logging entry.
+    var manualEntry: Bool
     /// When `visibility == .groups`, these are `SocialGroup.id` values that may see the post.
     var sharedGroupIds: [String]
     var createdAt: Date?
@@ -103,6 +107,8 @@ struct FeedPost: Identifiable, Equatable, Hashable {
         intensity: Int? = nil,
         whatHelped: String? = nil,
         helpfulTags: [String] = [],
+        tags: [String] = [],
+        manualEntry: Bool = false,
         sharedGroupIds: [String] = [],
         createdAt: Date? = Date(),
         softSupportCounts: [String: Int]? = nil,
@@ -127,6 +133,8 @@ struct FeedPost: Identifiable, Equatable, Hashable {
         self.intensity = intensity
         self.whatHelped = whatHelped
         self.helpfulTags = helpfulTags
+        self.tags = tags
+        self.manualEntry = manualEntry
         self.sharedGroupIds = sharedGroupIds
         self.createdAt = createdAt
         var counts = softSupportCounts ?? [:]
@@ -220,6 +228,8 @@ extension FeedPost {
         let trimmedTip = tipRaw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         self.whatHelped = trimmedTip.isEmpty ? nil : trimmedTip
         self.helpfulTags = data["helpfulTags"] as? [String] ?? []
+        self.tags = data["tags"] as? [String] ?? []
+        self.manualEntry = data["manualEntry"] as? Bool ?? false
         self.sharedGroupIds = data["sharedGroupIds"] as? [String] ?? []
         self.createdAt = createdAt
 

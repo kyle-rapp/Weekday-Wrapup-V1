@@ -27,10 +27,39 @@ struct FeedView: View {
 
     private var paletteViewerId: String? { auth.currentUser?.id }
 
+    private var softSocialNudgeLine: String? {
+        let tough = firestore.posts.filter { post in
+            guard firestore.followingIds.contains(post.authorId) else { return false }
+            let emotion = post.primaryEmotion.lowercased()
+            return (post.intensity ?? 0) >= 7
+                || ["sad", "anxious", "overwhelmed", "lonely"].contains(where: { emotion.contains($0) })
+        }
+        if tough.count >= 3 {
+            return "3 friends felt overwhelmed this week."
+        }
+        if tough.count >= 1 {
+            return "Someone close to you had a tough day."
+        }
+        return nil
+    }
+
     var body: some View {
         ZStack {
             ScrollView {
                 LazyVStack(spacing: 24) {
+                    if let nudge = softSocialNudgeLine {
+                        Text(nudge)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.colors.textSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(AppTheme.colors.mist.opacity(0.35))
+                            )
+                    }
+
                     if firestore.posts.isEmpty {
                         Text("No posts yet. Share a wrapup from the Share tab!")
                             .font(.subheadline)
@@ -313,11 +342,6 @@ struct FeedPostCard: View {
                 Text("Goal: \(livePost.goal)")
                     .font(.caption)
                     .foregroundStyle(.blue.opacity(0.9))
-            }
-
-            if uid != nil {
-                SoftSupportReactionBar(post: livePost, uid: uid)
-                    .environmentObject(firestore)
             }
 
             FeedReactionRow(

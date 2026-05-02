@@ -29,6 +29,7 @@ struct DailyCheckInRecommendationsSheet: View {
             keywords: bundle.analysis.keywords,
             extraText: bundle.analysis.emotionalState
         )
+        || EmotionalSafetySignals.containsCrisisLanguage(bundle.sourceText)
     }
 
     private var safetyResources: [ResourceRecommendation] {
@@ -52,6 +53,11 @@ struct DailyCheckInRecommendationsSheet: View {
         )
     }
 
+    private var showCrisisLine: Bool {
+        let text = [bundle.sourceText, bundle.analysis.emotionalState, bundle.analysis.keywords.joined(separator: " ")].joined(separator: " ")
+        return EmotionalSafetySignals.containsCrisisLanguage(text)
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -62,7 +68,7 @@ struct DailyCheckInRecommendationsSheet: View {
                         .fixedSize(horizontal: false, vertical: true)
 
                     if needsSafetyPanel && !safetyDismissed {
-                        EmotionalSafetySupportCard(resources: safetyResources) {
+                        EmotionalSafetySupportCard(resources: safetyResources, showCrisisLine: showCrisisLine) {
                             safetyDismissed = true
                         }
                     }

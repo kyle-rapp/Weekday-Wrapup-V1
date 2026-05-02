@@ -248,22 +248,36 @@ struct ProfileView: View {
 
     @ViewBuilder
     private var favoriteSongLine: some View {
-        let song = profile?.favoriteSong?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let artist = profile?.favoriteArtist?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !song.isEmpty || !artist.isEmpty {
-            VStack(alignment: .leading, spacing: 2) {
-                if !song.isEmpty {
-                    Label(song, systemImage: "music.note")
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.colors.textPrimary)
+        if profile?.showFavoriteSong != false {
+            let song = profile?.favoriteSong?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let artist = profile?.favoriteArtist?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !song.isEmpty || !artist.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    if !song.isEmpty {
+                        Label(song, systemImage: "music.note")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.colors.textPrimary)
+                    }
+                    if !artist.isEmpty {
+                        Text(artist)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.colors.textSecondary)
+                    }
                 }
-                if !artist.isEmpty {
-                    Text(artist)
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.colors.textSecondary)
-                }
+                .padding(.top, 2)
             }
-            .padding(.top, 2)
+        }
+    }
+
+    @ViewBuilder
+    private var venmoLine: some View {
+        if profile?.showVenmoUsername == true {
+            let venmo = profile?.venmoUsername?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !venmo.isEmpty {
+                Label("@\(venmo.replacingOccurrences(of: "@", with: ""))", systemImage: "dollarsign.circle")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.colors.textSecondary)
+            }
         }
     }
 
@@ -308,6 +322,7 @@ struct ProfileView: View {
                         .foregroundStyle(AppTheme.colors.textSecondary)
                 }
                 favoriteSongLine
+                venmoLine
                 if let bio = profile?.bio, !bio.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text(bio)
                         .font(.body)
@@ -845,6 +860,7 @@ struct ProfileView: View {
 
     private func sendSupportMessage(text: String) async {
         guard let from = viewerId, from != userId else { return }
+        guard supportSettings.allowSupport, supportSettings.allowMessages, shouldShowSupportCard else { return }
         do {
             try await firestore.sendSupportMessage(fromUserId: from, targetUserId: userId, text: text)
         } catch {
@@ -854,6 +870,7 @@ struct ProfileView: View {
 
     private func sendSupportInvite(activity: String) async {
         guard let from = viewerId, from != userId else { return }
+        guard supportSettings.allowSupport, supportSettings.allowInvites, shouldShowSupportCard else { return }
         do {
             try await firestore.sendSupportInvite(fromUserId: from, targetUserId: userId, activity: activity)
         } catch {
@@ -863,6 +880,7 @@ struct ProfileView: View {
 
     private func sendSupportGift(link: String) async {
         guard let from = viewerId, from != userId else { return }
+        guard supportSettings.allowSupport, supportSettings.allowGifts, shouldShowSupportCard else { return }
         let title = URL(string: link)?.host ?? "Gift idea"
         do {
             try await firestore.sendSupportGift(
