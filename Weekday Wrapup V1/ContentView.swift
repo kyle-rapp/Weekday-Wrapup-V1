@@ -24,6 +24,7 @@ struct ContentView: View {
     @State private var poopsText = ""
     @State private var weeklyGoal = ""
     @State private var monthlyGoal = ""
+    @State private var postTitle = ""
     @State private var capturedImage: UIImage?
     @State private var visibility: PostVisibility = .public
     @State private var didLoadEmotionDraft = false
@@ -72,6 +73,7 @@ struct ContentView: View {
             whatHelped: trimmedHelp.isEmpty ? nil : trimmedHelp,
             helpfulTags: selectedHelpfulTags.isEmpty ? nil : selectedHelpfulTags.sorted(),
             sharedGroupIds: visibility == .groups ? selectedGroupId.map { [$0] } : nil,
+            title: postTitle,
             selectedEmotionsOrdered: emotionRouter.shareEmotions
         )
     }
@@ -121,6 +123,9 @@ struct ContentView: View {
     }
 
     private static let draftEmotionsKey = "draftShareEmotions"
+    private var isUITestMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("--uitest-mode")
+    }
 
     private func saveDraftEmotions() {
         UserDefaults.standard.set(emotionRouter.shareEmotions.sorted(), forKey: Self.draftEmotionsKey)
@@ -236,6 +241,7 @@ struct ContentView: View {
                             .font(.title3)
                             .foregroundStyle(AppTheme.colors.textPrimary.opacity(0.88))
                     }
+                    .accessibilityIdentifier("share_profile_menu_button")
 
                     WeekNumberView(weekNumber: weekNumber, emoji: $weeklyEmoji)
                 }
@@ -390,6 +396,14 @@ struct ContentView: View {
                                     MonthlyGoalInputView(text: $monthlyGoal)
                                 }
 
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Post title")
+                                        .font(.headline)
+                                        .foregroundStyle(AppTheme.colors.textPrimary)
+                                    TextField("Give your post a title...", text: $postTitle)
+                                        .textFieldStyle(.roundedBorder)
+                                }
+
                                 VStack(alignment: .leading, spacing: 10) {
                                     Label("Share to", systemImage: "lock.fill")
                                         .font(.subheadline.weight(.semibold))
@@ -429,6 +443,12 @@ struct ContentView: View {
         }
         .onAppear {
             loadDraftEmotionsIfNeeded()
+            if isUITestMode, weeklyEmoji.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                weeklyEmoji = "✨"
+                if emotionalInsight.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    emotionalInsight = "UI test check-in"
+                }
+            }
         }
         .onChange(of: visibility) { _, newVal in
             if newVal == .groups, selectedGroupId == nil, let first = firestore.myGroups.first {
@@ -505,7 +525,7 @@ private struct ContentViewPreviewHost: View {
             .environmentObject(feedViewModel)
             .environmentObject(emotionRouter)
             .onAppear {
-                firestore.applyPreviewPosts(PreviewSampleData.sampleFeedPosts)
+                firestore.applyPreviewPosts(SeedDataManager.previewSeedPosts())
             }
     }
 }

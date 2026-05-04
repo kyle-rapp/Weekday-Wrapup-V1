@@ -16,10 +16,6 @@ struct FeedView: View {
     @State private var expandedReactionPostId: String?
     @State private var feedPresentCreateGroup = false
 
-    private var myHistoryEntries: [CheckInData] {
-        firestore.wrapupHistoryEntries(forUserId: auth.currentUser?.id)
-    }
-
     private var palettePost: FeedPost? {
         guard let id = expandedReactionPostId else { return nil }
         return firestore.posts.first(where: { $0.id == id })
@@ -43,6 +39,12 @@ struct FeedView: View {
         return nil
     }
 
+    private var weeklyHelpfulTagsLine: String? {
+        let topTags = firestore.topHelpfulTagsThisWeek()
+        guard !topTags.isEmpty else { return nil }
+        return "Most helpful this week: \(topTags.joined(separator: ", "))"
+    }
+
     var body: some View {
         ZStack {
             ScrollView {
@@ -58,6 +60,14 @@ struct FeedView: View {
                                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                                     .fill(AppTheme.colors.mist.opacity(0.35))
                             )
+                    }
+
+                    if let line = weeklyHelpfulTagsLine {
+                        Text(line)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 14)
                     }
 
                     if firestore.posts.isEmpty {
@@ -84,49 +94,54 @@ struct FeedView: View {
             if palettePost != nil {
                 feedReactionPaletteOverlay
                     .transition(.opacity.combined(with: .scale(scale: 0.94)))
-                    .zIndex(1)
+                    .zIndex(10)
             }
         }
         .animation(.spring(response: 0.38, dampingFraction: 0.82), value: expandedReactionPostId)
         .background(feedBackground.ignoresSafeArea())
-        .navigationTitle("Feed")
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if auth.currentUser != nil {
-                ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 18) {
-                        NavigationLink {
-                            GroupsView()
-                        } label: {
-                            VStack(spacing: 2) {
-                                Image(systemName: "person.3.sequence.fill")
-                                    .font(.body.weight(.semibold))
-                                Text("Groups")
-                                    .font(.caption2)
-                                    .foregroundStyle(.primary)
-                                    .opacity(0.9)
-                            }
-                            .foregroundStyle(.primary)
-                            .frame(minWidth: 48)
-                        }
-                        .contextMenu {
-                            Button {
-                                feedPresentCreateGroup = true
-                            } label: {
-                                Label("Create Group", systemImage: "plus.circle")
-                            }
-                        }
-                        .accessibilityLabel("Groups")
+                ToolbarItem(placement: .principal) {
+                    ZStack {
+                        Text("Feed")
+                            .font(.headline.weight(.semibold))
+                            .frame(maxWidth: .infinity, alignment: .center)
 
-                        NavigationLink {
-                            HistoryView(entries: myHistoryEntries)
-                        } label: {
-                            Image(systemName: "clock.arrow.circlepath")
-                                .font(.body.weight(.semibold))
-                                .foregroundStyle(AppTheme.colors.ocean)
+                        HStack {
+                            NavigationLink {
+                                FindFriendsView()
+                            } label: {
+                                Text("Find Friends")
+                                    .font(.subheadline.weight(.medium))
+                                    .frame(width: 108, alignment: .leading)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Find friends")
+
+                            Spacer()
+
+                            NavigationLink {
+                                GroupsView()
+                            } label: {
+                                Text("Groups")
+                                    .font(.subheadline.weight(.medium))
+                                    .frame(width: 108, alignment: .trailing)
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                Button {
+                                    feedPresentCreateGroup = true
+                                } label: {
+                                    Label("Create Group", systemImage: "plus.circle")
+                                }
+                            }
+                            .accessibilityLabel("Groups")
                         }
-                        .accessibilityLabel("Past wrapups")
                     }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 2)
                 }
             }
         }
@@ -160,8 +175,10 @@ struct FeedView: View {
                 Color.black.opacity(0.38)
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityIdentifier("reaction_overlay_background")
                     .onTapGesture {
-                        expandedReactionPostId = nil
+                        dismissExpandedReactionPalette()
                     }
 
                 VStack {
@@ -174,17 +191,38 @@ struct FeedView: View {
                             Task { @MainActor in
                                 do {
                                     try await firestore.applyReaction(postId: p.id, userId: uid, emoji: emoji)
-                                    expandedReactionPostId = nil
+                                    dismissExpandedReactionPalette()
                                 } catch {
-                                    print("❌ Reaction failed: \(error.localizedDescription)")
+                                    AppLogger.error("Reaction apply failed: \(error.localizedDescription)")
                                 }
                             }
                         }
                     )
+                    .allowsHitTesting(true)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 24)
                 }
             }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 20)
+                    .onEnded { value in
+                        if value.translation.height > 24 {
+                            dismissExpandedReactionPalette()
+                        }
+                    }
+            )
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    dismissExpandedReactionPalette()
+                }
+            )
+        }
+    }
+
+    private func dismissExpandedReactionPalette() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            expandedReactionPostId = nil
         }
     }
 }
@@ -210,11 +248,13 @@ struct FeedPostCard: View {
 
     var body: some View {
         cardBody
+            .accessibilityElement(children: .contain)
             .onLongPressGesture(minimumDuration: 0.45, pressing: nil) {
                 guard uid != nil else { return }
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 expandedReactionPostId = post.id
             }
+            .accessibilityIdentifier("feed_post_\(post.id)")
     }
 
     private var cardBody: some View {
@@ -231,6 +271,7 @@ struct FeedPostCard: View {
                         .foregroundStyle(.orange.opacity(0.85))
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("feed_author_avatar_\(livePost.authorId)")
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .firstTextBaseline) {
@@ -244,6 +285,7 @@ struct FeedPostCard: View {
                                 .foregroundStyle(.primary)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("feed_author_name_\(livePost.authorId)")
                         Spacer(minLength: 8)
                         if let uid, uid != livePost.authorId {
                             Button {
@@ -287,12 +329,50 @@ struct FeedPostCard: View {
                         Text("·")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
-                        Text(RelativeTimeFormat.string(for: livePost.createdAt))
+                        Text((livePost.createdAt ?? .now).formatted(.dateTime.month().day().year()))
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
                     .foregroundStyle(.secondary.opacity(0.95))
                 }
+            }
+
+            if let title = livePost.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let urlString = livePost.imageURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !urlString.isEmpty,
+               let url = URL(string: urlString) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .empty:
+                        ProgressView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    case .failure:
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.gray.opacity(0.12))
+                            .overlay(
+                                Image(systemName: "photo")
+                                    .foregroundStyle(.secondary)
+                            )
+                    @unknown default:
+                        ProgressView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+                .frame(height: 220)
+                .frame(maxWidth: .infinity)
+                .clipped()
+                .cornerRadius(12)
             }
 
             HStack(spacing: 10) {
@@ -342,6 +422,21 @@ struct FeedPostCard: View {
                 Text("Goal: \(livePost.goal)")
                     .font(.caption)
                     .foregroundStyle(.blue.opacity(0.9))
+            }
+
+            if !livePost.helpfulTags.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(livePost.helpfulTags, id: \.self) { tag in
+                            Text("#\(tag)")
+                                .font(.caption)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(Color.blue.opacity(0.1))
+                                .clipShape(Capsule())
+                        }
+                    }
+                }
             }
 
             FeedReactionRow(
@@ -415,7 +510,7 @@ private struct FeedPreviewHost: View {
         .environmentObject(ResourceRecommendationManager.shared)
         .environmentObject(ProfileManager.shared)
         .onAppear {
-            firestore.applyPreviewPosts(PreviewSampleData.sampleFeedPosts)
+            firestore.applyPreviewPosts(SeedDataManager.previewSeedPosts())
             firestore.applyPreviewFollowing(["user-alice"])
             firestore.applyPreviewComments(PreviewSampleData.sampleComments)
         }
@@ -437,7 +532,7 @@ private struct FeedPostCardPreviewHost: View {
         }
         .background(feedBackground)
         .onAppear {
-            firestore.applyPreviewPosts(PreviewSampleData.sampleFeedPosts)
+            firestore.applyPreviewPosts(SeedDataManager.previewSeedPosts())
             firestore.applyPreviewFollowing([])
         }
     }
@@ -458,7 +553,7 @@ private struct PostDetailPreviewHost: View {
         .environmentObject(ResourceRecommendationManager.shared)
         .environmentObject(ProfileManager.shared)
         .onAppear {
-            firestore.applyPreviewPosts(PreviewSampleData.sampleFeedPosts)
+            firestore.applyPreviewPosts(SeedDataManager.previewSeedPosts())
             firestore.applyPreviewComments(PreviewSampleData.sampleComments)
         }
     }

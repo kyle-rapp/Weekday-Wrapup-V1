@@ -89,6 +89,10 @@ service cloud.firestore {
         && request.auth.uid == resource.data.ownerId;
     }
 
+    match /dopamineMenus/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
     /// Top-level user document + subcollections. Reads: any signed-in user. Writes: only the owner document.
     match /users/{userId} {
       // `read` = get + list for collections; authenticated members can read profiles.

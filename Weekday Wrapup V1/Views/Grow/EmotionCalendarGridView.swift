@@ -21,6 +21,9 @@ struct EmotionCalendarGridView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             monthPicker
+            Text(calendar.displayedMonth.formatted(date: .abbreviated, time: .omitted))
+                .font(.caption)
+                .foregroundColor(.red)
 
             LazyVGrid(columns: columns, spacing: 6) {
                 ForEach(Array(calendar.weekdayHeaderSymbols.enumerated()), id: \.offset) { _, sym in
@@ -35,6 +38,9 @@ struct EmotionCalendarGridView: View {
                 }
             }
         }
+        .onChange(of: calendar.displayedMonth) { _, newValue in
+            print("🧠 UI RECEIVED MONTH:", newValue)
+        }
     }
 
     private var monthPicker: some View {
@@ -47,12 +53,14 @@ struct EmotionCalendarGridView: View {
                     .foregroundStyle(AppTheme.colors.ocean)
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("calendar_prev_month")
 
             Spacer()
 
             Text(calendar.monthTitle)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(AppTheme.colors.textPrimary)
+                .accessibilityIdentifier("calendar_month_label")
 
             Spacer()
 
@@ -64,6 +72,9 @@ struct EmotionCalendarGridView: View {
                     .foregroundStyle(AppTheme.colors.ocean)
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("calendar_next_month")
+            .disabled(calendar.isCurrentMonth)
+            .opacity(calendar.isCurrentMonth ? 0.4 : 1.0)
         }
     }
 

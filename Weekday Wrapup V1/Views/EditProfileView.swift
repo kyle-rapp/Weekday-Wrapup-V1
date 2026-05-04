@@ -74,6 +74,7 @@ struct EditProfileView: View {
             Form {
                 Section("Basic Info") {
                     TextField("Display name", text: $displayName)
+                        .accessibilityIdentifier("display_name_field")
                     TextField("Username", text: $username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -224,6 +225,7 @@ struct EditProfileView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { Task { await save() } }
+                        .accessibilityIdentifier("save_profile_button")
                         .disabled(isSaving)
                 }
             }
@@ -246,6 +248,7 @@ struct EditProfileView: View {
     private func save() async {
         isSaving = true
         defer { isSaving = false }
+        AppLogger.log("[PROFILE] Saving profile for user: \(userId)")
 
         guard let uid = auth.currentUser?.id, uid == userId else {
             errorText = "Auth mismatch. Please sign in again."
@@ -313,8 +316,10 @@ struct EditProfileView: View {
             )
             try await firestore.saveSupportSettings(settings, userId: uid)
             profileManager.invalidate(userId: uid)
+            AppLogger.log("[PROFILE] Save success for user: \(uid)")
             await MainActor.run { dismiss() }
         } catch {
+            AppLogger.error("Profile save failed: \(error.localizedDescription)")
             errorText = error.localizedDescription
         }
     }

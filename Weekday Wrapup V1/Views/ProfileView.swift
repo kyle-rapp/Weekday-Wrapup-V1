@@ -165,7 +165,15 @@ struct ProfileView: View {
         .toolbar {
             if isSelf {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Edit") { showEditor = true }
+                    Menu {
+                        Button("Edit profile") { showEditor = true }
+                        Button("Log out", role: .destructive) {
+                            Task { await auth.signOut() }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityIdentifier("profile_edit_button")
                 }
             } else {
                 ToolbarItem(placement: .topBarTrailing) {

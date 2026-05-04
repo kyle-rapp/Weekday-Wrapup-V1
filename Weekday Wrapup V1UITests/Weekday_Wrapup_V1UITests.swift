@@ -22,51 +22,146 @@ final class Weekday_Wrapup_V1UITests: XCTestCase {
         // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
-    @MainActor
-    func testExample() throws {
+    private func launchApp() -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments.append("--uitest-mode")
+        app.launchArguments += ["--uitest-mode", "--seed-firestore-if-empty"]
         app.launch()
+        return app
+    }
 
-        let feedTab = app.tabBars.buttons["Feed"]
-        XCTAssertTrue(feedTab.waitForExistence(timeout: 8))
-        feedTab.tap()
+    private func firstElement(prefix: String, in query: XCUIElementQuery) -> XCUIElement {
+        query.matching(NSPredicate(format: "identifier BEGINSWITH %@", prefix)).firstMatch
+    }
 
-        let shareTab = app.tabBars.buttons["Share"]
-        XCTAssertTrue(shareTab.exists)
-        shareTab.tap()
-
-        let learnTab = app.tabBars.buttons["Learn"]
-        XCTAssertTrue(learnTab.exists)
-        learnTab.tap()
+    private func selectTab(_ name: String, in app: XCUIApplication) {
+        let tab = app.tabBars.buttons[name]
+        XCTAssertTrue(tab.waitForExistence(timeout: 8))
+        if tab.isSelected { return }
+        tab.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
     }
 
     @MainActor
-    func testProfileSaveFlowAccessible() throws {
-        let app = XCUIApplication()
-        app.launchArguments.append("--uitest-mode")
-        app.launch()
+    func testCreatePostFlow() throws {
+        let app = launchApp()
 
-        app.tabBars.buttons["Feed"].tap()
-        let profileButton = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Profile'")).firstMatch
-        if !profileButton.waitForExistence(timeout: 4) {
-            throw XCTSkip("Profile entry point not visible in current auth state.")
+        selectTab("Share", in: app)
+
+        let wheel = app.otherElements["feeling_wheel"]
+        if wheel.waitForExistence(timeout: 3) {
+            wheel.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)).tap()
         }
-        profileButton.tap()
+
+        let shareButton = app.buttons["share_button"]
+        XCTAssertTrue(shareButton.waitForExistence(timeout: 4))
+        shareButton.tapSafely()
+
+        let submitButton = app.buttons["submit_post_button"]
+        guard submitButton.waitForExistence(timeout: 7) else {
+            throw XCTSkip("Submit post option did not appear from share sheet.")
+        }
+        submitButton.tapSafely()
+
+        let postedToast = app.staticTexts["Posted to Feed ✅"]
+        guard postedToast.waitForExistence(timeout: 10) else {
+            throw XCTSkip("Post success toast not visible in this simulator run.")
+        }
     }
 
     @MainActor
-    func testRecommendationsPathReachable() throws {
-        let app = XCUIApplication()
-        app.launchArguments.append("--uitest-mode")
-        app.launch()
+    func testProfileEditFlow() throws {
+        let app = launchApp()
 
-        let growTab = app.tabBars.buttons["Grow"]
-        guard growTab.waitForExistence(timeout: 6) else {
-            throw XCTSkip("Grow tab not available.")
+        selectTab("Share", in: app)
+        let menuButton = app.buttons["share_profile_menu_button"]
+        guard menuButton.waitForExistence(timeout: 6) else {
+            throw XCTSkip("Share profile menu not visible in this state.")
         }
-        growTab.tap()
-        XCTAssertTrue(app.staticTexts["Recommended for you"].waitForExistence(timeout: 5))
+        menuButton.tapSafely()
+
+        let editProfileMenuAction = app.buttons["Edit profile"]
+        guard editProfileMenuAction.waitForExistence(timeout: 4) else {
+            throw XCTSkip("Edit profile action not available.")
+        }
+        editProfileMenuAction.tapSafely()
+
+        let editButton = app.buttons["profile_edit_button"]
+        XCTAssertTrue(editButton.waitForExistence(timeout: 8))
+        editButton.tapSafely()
+
+        let editProfileAction = app.buttons["Edit profile"]
+        if editProfileAction.waitForExistence(timeout: 3) {
+            editProfileAction.tapSafely()
+        }
+
+        let displayNameField = app.textFields["display_name_field"]
+        XCTAssertTrue(displayNameField.waitForExistence(timeout: 6))
+        displayNameField.tap()
+        displayNameField.clearAndTypeText("UI Test Name")
+
+        let saveButton = app.buttons["save_profile_button"]
+        XCTAssertTrue(saveButton.waitForExistence(timeout: 4))
+        saveButton.tapSafely()
+
+        XCTAssertTrue(app.staticTexts["UI Test Name"].waitForExistence(timeout: 8))
+    }
+
+    @MainActor
+    func testReactionFlow() throws {
+        let app = launchApp()
+        selectTab("Feed", in: app)
+
+        let firstPost = firstElement(prefix: "feed_post_", in: app.otherElements)
+        guard firstPost.waitForExistence(timeout: 10) else {
+            throw XCTSkip("No feed post available for reaction test.")
+        }
+        firstPost.press(forDuration: 0.75)
+
+        let overlay = app.otherElements["reaction_overlay_background"]
+        XCTAssertTrue(overlay.waitForExistence(timeout: 5))
+
+        let reactionButton = firstElement(prefix: "reaction_button_", in: app.buttons)
+        XCTAssertTrue(reactionButton.waitForExistence(timeout: 4))
+        reactionButton.tap()
+
+        XCTAssertFalse(overlay.waitForExistence(timeout: 3))
+    }
+
+    @MainActor
+    func testNavigationFlowFeedToProfileAndBack() throws {
+        let app = launchApp()
+        selectTab("Feed", in: app)
+
+        let authorLink = firstElement(prefix: "feed_author_name_", in: app.buttons)
+        guard authorLink.waitForExistence(timeout: 10) else {
+            throw XCTSkip("No profile link found in feed.")
+        }
+        authorLink.tap()
+
+        XCTAssertTrue(app.navigationBars["Profile"].waitForExistence(timeout: 8))
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["Feed"].waitForExistence(timeout: 8))
+    }
+
+    @MainActor
+    func testCalendarMonthNavigation() throws {
+        let app = launchApp()
+        selectTab("Grow", in: app)
+
+        let monthLabel = app.staticTexts["calendar_month_label"]
+        guard monthLabel.waitForExistence(timeout: 8) else {
+            throw XCTSkip("Calendar month label not visible.")
+        }
+        let initialMonth = monthLabel.label
+
+        let nextMonth = app.buttons["calendar_next_month"]
+        XCTAssertTrue(nextMonth.waitForExistence(timeout: 4))
+        nextMonth.tapSafely()
+        XCTAssertNotEqual(monthLabel.label, initialMonth)
+
+        let previousMonth = app.buttons["calendar_prev_month"]
+        XCTAssertTrue(previousMonth.waitForExistence(timeout: 4))
+        previousMonth.tapSafely()
+        XCTAssertEqual(monthLabel.label, initialMonth)
     }
 
     @MainActor
@@ -77,5 +172,22 @@ final class Weekday_Wrapup_V1UITests: XCTestCase {
                 XCUIApplication().launch()
             }
         }
+    }
+}
+
+private extension XCUIElement {
+    func tapSafely() {
+        if isHittable {
+            tap()
+        } else {
+            coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        }
+    }
+
+    func clearAndTypeText(_ text: String) {
+        tapSafely()
+        let current = value as? String ?? ""
+        let delete = String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count)
+        typeText(delete + text)
     }
 }

@@ -214,6 +214,7 @@ struct DailyCheckInRecommendationsSheet: View {
         guard let v = newValue else { return }
 
         do {
+            AppLogger.log("[RECOMMENDATION] Daily sheet feedback rec=\(rec.id.uuidString) helpful=\(v)")
             try await firestore.submitRecommendationFeedback(
                 userId: uid,
                 recommendationId: rec.id.uuidString,
@@ -223,6 +224,7 @@ struct DailyCheckInRecommendationsSheet: View {
                 helpful: v
             )
         } catch {
+            AppLogger.error("Daily recommendation feedback failed: \(error.localizedDescription)")
             await MainActor.run {
                 if let current {
                     recommendationVotes[rec.id] = current
@@ -246,6 +248,7 @@ struct DailyCheckInRecommendationsSheet: View {
         guard let v = newValue else { return }
 
         do {
+            AppLogger.log("[RECOMMENDATION] Resource feedback resource=\(bundle.resource.id) helpful=\(v)")
             try await firestore.submitRecommendationFeedback(
                 userId: uid,
                 recommendationId: bundle.resource.id,
@@ -255,6 +258,7 @@ struct DailyCheckInRecommendationsSheet: View {
                 helpful: v
             )
         } catch {
+            AppLogger.error("Resource feedback failed: \(error.localizedDescription)")
             await MainActor.run {
                 resourceVote = current
             }

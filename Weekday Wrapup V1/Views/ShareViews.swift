@@ -66,7 +66,7 @@ struct ShareOptionsView: View {
                     ShareOptionRow(title: "Email", icon: "envelope.fill", color: .gray) {
                         shareViaEmail()
                     }
-                    ShareOptionRow(title: "Feed", icon: "list.bullet", color: .green) {
+                    ShareOptionRow(title: "Feed", icon: "list.bullet", color: .green, accessibilityId: "submit_post_button") {
                         postToFeed()
                     }
                     .disabled(!feedActionEnabled)
@@ -102,11 +102,12 @@ struct ShareOptionsView: View {
     }
 
     private func postToFeed() {
+        print("[POST] Attempting post submit from share sheet")
         feedError = nil
         firestore.clearErrorMessage()
 
         guard let firebaseUser = Auth.auth().currentUser else {
-            print("❌ No authenticated user")
+            print("[ERROR] No authenticated user for post submit")
             feedError = "You must be signed in to post."
             feedAlertText = feedError ?? ""
             showFeedAlert = true
@@ -116,7 +117,7 @@ struct ShareOptionsView: View {
         guard let uid = auth.currentUser?.id,
               let name = auth.currentUser?.name,
               uid == firebaseUser.uid else {
-            print("❌ Auth profile missing or mismatch")
+            print("[ERROR] Auth profile missing or mismatch for post submit")
             feedError = "You must be signed in to post."
             feedAlertText = feedError ?? ""
             showFeedAlert = true
@@ -125,7 +126,7 @@ struct ShareOptionsView: View {
 
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
-            print("❌ Empty profile name")
+            print("[ERROR] Empty profile name blocked post submit")
             feedError = "Add your name in profile before posting to the feed."
             feedAlertText = feedError ?? ""
             showFeedAlert = true
@@ -146,21 +147,29 @@ struct ShareOptionsView: View {
             let allowed = await firestore.canCreatePost(userId: uid)
             guard allowed else {
                 let msg = "You've reached your 3 posts for today 🌿"
-                print("🚫", msg)
+                print("[POST] Blocked by daily post limit")
                 feedError = msg
                 feedAlertText = msg
                 showFeedAlert = true
                 return
             }
 
-            let ok = await firestore.createPost(from: checkInData, authorId: uid, authorName: trimmedName)
+            let tip = checkInData.whatHelped ?? ""
+            let extractedTags = HelpfulTagger.extractTags(from: tip)
+            let ok = await firestore.createPost(
+                from: checkInData,
+                authorId: uid,
+                authorName: trimmedName,
+                helpfulTags: extractedTags
+            )
             if ok {
-                let tip = checkInData.whatHelped?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                if !tip.isEmpty,
+                print("[POST] Post creation succeeded")
+                let trimmedTip = tip.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedTip.isEmpty,
                    let key = EmotionRouter.preferredDisplayKey(in: checkInData.selectedEmotions)?.lowercased(),
                    !key.isEmpty {
                     var dict = UserDefaults.standard.dictionary(forKey: "whatHelpedByEmotion") as? [String: String] ?? [:]
-                    dict[key] = tip
+                    dict[key] = trimmedTip
                     UserDefaults.standard.set(dict, forKey: "whatHelpedByEmotion")
                 }
                 emotionRouter.saveEntry()
@@ -179,7 +188,7 @@ struct ShareOptionsView: View {
                     emotion: checkInData.firstSelectedEmotionLabel,
                     intensity: checkInData.intensity ?? 5,
                     journalText: combinedText,
-                    helpfulTags: checkInData.helpfulTags ?? [],
+                    helpfulTags: Array(Set((checkInData.helpfulTags ?? []) + extractedTags)).sorted(),
                     userPreferences: prefs,
                     weather: nil
                 )
@@ -189,7 +198,7 @@ struct ShareOptionsView: View {
                 tabRouter.presentDailyRecommendations(bundle)
             } else {
                 let msg = firestore.errorMessage ?? "Could not post to the feed."
-                print("❌ Firestore error:", msg)
+                print("[ERROR] Firestore post create failed: \(msg)")
                 feedError = msg
                 feedAlertText = msg
                 showFeedAlert = true
@@ -291,6 +300,7 @@ struct ShareOptionRow: View {
     let title: String
     let icon: String
     let color: Color
+    var accessibilityId: String? = nil
     let action: () -> Void
 
     var body: some View {
@@ -302,5 +312,9 @@ struct ShareOptionRow: View {
                     .foregroundColor(.primary)
             }
         }
+        .accessibilityIdentifier(
+            accessibilityId
+            ?? "share_option_\(title.lowercased().replacingOccurrences(of: " ", with: "_"))"
+        )
     }
 }

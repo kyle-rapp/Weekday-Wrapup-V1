@@ -61,6 +61,7 @@ struct GrowView: View {
                 }
 
                 recommendationsSection
+                dopamineMenuSection
             }
             .padding()
             .padding(.top, 8)
@@ -271,6 +272,7 @@ struct GrowView: View {
         }
 
         do {
+            AppLogger.log("[RECOMMENDATION] Sending feedback rec=\(rec.id.uuidString) helpful=\(v)")
             try await firestore.submitRecommendationFeedback(
                 userId: uid,
                 recommendationId: rec.id.uuidString,
@@ -288,7 +290,7 @@ struct GrowView: View {
             await loadRecommendationMemory()
             await MainActor.run { recommendationFeedbackSubmitting.remove(rec.id) }
         } catch {
-            print("⚠️ recommendation feedback: \(error.localizedDescription)")
+            AppLogger.error("Recommendation feedback failed: \(error.localizedDescription)")
             await MainActor.run {
                 if let current {
                     recommendationFeedback[rec.id] = current
@@ -330,7 +332,7 @@ struct GrowView: View {
 
                 EmotionCalendarGridView(
                     calendar: calendarViewModel,
-                    entries: viewModel.filteredEntries,
+                    entries: viewModel.entries,
                     namespace: calendarNamespace
                 )
             }
@@ -538,6 +540,10 @@ struct GrowView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var dopamineMenuSection: some View {
+        DopamineMenuView()
     }
 
     private func saveManualCalendarEntry(date: Date, emotion: String, intensity: Int, note: String?) async {

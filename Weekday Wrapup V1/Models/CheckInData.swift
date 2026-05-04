@@ -31,6 +31,10 @@ struct CheckInData: Identifiable {
     let helpfulTags: [String]?
     /// When posting with group visibility, target group ids.
     let sharedGroupIds: [String]?
+    /// Optional post title shown in feed cards.
+    var title: String = ""
+    /// Optional remote image URL shown in feed cards.
+    let imageURL: String?
 
     init(userName: String, astrologySign: String, weekNumber: Int, weeklyEmoji: String,
          checkInImage: UIImage?, selectedEmotions: Set<String>, emotionalInsight: String,
@@ -38,6 +42,7 @@ struct CheckInData: Identifiable {
          profileImage: Image? = nil, checkInVideoURL: URL? = nil, drawingImage: UIImage? = nil,
          visibility: PostVisibility = .public, date: Date = Date(), intensity: Int? = nil,
          whatHelped: String? = nil, manualEntry: Bool = false, helpfulTags: [String]? = nil, sharedGroupIds: [String]? = nil,
+         title: String = "", imageURL: String? = nil,
          selectedEmotionsOrdered: [String]? = nil,
          id: String? = nil) {
         self.id = id ?? UUID().uuidString
@@ -74,6 +79,8 @@ struct CheckInData: Identifiable {
         self.manualEntry = manualEntry
         self.helpfulTags = helpfulTags
         self.sharedGroupIds = sharedGroupIds
+        self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.imageURL = imageURL?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var shareText: String {
@@ -121,6 +128,8 @@ struct CheckInData: Identifiable {
             manualEntry: post.manualEntry,
             helpfulTags: post.helpfulTags.isEmpty ? nil : post.helpfulTags,
             sharedGroupIds: post.sharedGroupIds.isEmpty ? nil : post.sharedGroupIds,
+            title: post.title ?? "",
+            imageURL: post.imageURL,
             selectedEmotionsOrdered: post.selectedEmotions,
             id: post.id
         )

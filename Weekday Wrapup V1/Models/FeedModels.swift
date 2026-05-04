@@ -35,6 +35,8 @@ struct FeedPost: Identifiable, Equatable, Hashable {
     var insight: String
     var whoop: String
     var goal: String
+    var title: String?
+    var imageURL: String?
     /// Calendar week number stored at post time (fallback derived from `createdAt` for older posts).
     var wrapupWeekNumber: Int
     /// Emotion tags from the wrapup check-in (empty for older posts).
@@ -95,6 +97,8 @@ struct FeedPost: Identifiable, Equatable, Hashable {
         insight: String,
         whoop: String,
         goal: String,
+        title: String? = nil,
+        imageURL: String? = nil,
         wrapupWeekNumber: Int = Calendar.current.component(.weekOfYear, from: Date()),
         selectedEmotions: [String] = [],
         likeCount: Int = 0,
@@ -121,6 +125,8 @@ struct FeedPost: Identifiable, Equatable, Hashable {
         self.insight = insight
         self.whoop = whoop
         self.goal = goal
+        self.title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.imageURL = imageURL?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.wrapupWeekNumber = wrapupWeekNumber
         self.selectedEmotions = selectedEmotions
         self.likeCount = likeCount
@@ -170,6 +176,10 @@ extension FeedPost {
         let insight = data["emotionalInsight"] as? String ?? ""
         let whoop = data["whoopsText"] as? String ?? ""
         let goal = data["weeklyGoal"] as? String ?? ""
+        let titleRaw = data["title"] as? String
+        let title = titleRaw?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let imageURLRaw = data["imageURL"] as? String ?? ""
+        let imageURL = imageURLRaw.trimmingCharacters(in: .whitespacesAndNewlines)
         let likeCount = FirestoreFieldParsing.intValue(data["likeCount"])
         let likedBy = data["likedBy"] as? [String] ?? []
         let userReactionsDirect = data["userReactions"] as? [String: String] ?? [:]
@@ -207,6 +217,8 @@ extension FeedPost {
         self.insight = insight
         self.whoop = whoop
         self.goal = goal
+        self.title = (title?.isEmpty == false) ? title : nil
+        self.imageURL = imageURL.isEmpty ? nil : imageURL
         self.wrapupWeekNumber = resolvedWeek
         self.selectedEmotions = emotionTags
         self.likeCount = likeCount

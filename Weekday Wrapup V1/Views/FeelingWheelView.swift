@@ -32,6 +32,7 @@ struct FeelingWheelView: View {
                 .frame(width: side, height: side)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityIdentifier("feeling_wheel")
         }
     }
 

@@ -44,6 +44,7 @@ struct ExpandedReactionPalette: View {
         )
         .scaleEffect(appeared ? 1 : 0.94)
         .opacity(appeared ? 1 : 0)
+        .allowsHitTesting(true)
         .onAppear {
             withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
                 appeared = true
@@ -83,5 +84,6 @@ struct ExpandedReactionPalette: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("React with \(emoji)\(count > 0 ? ", \(count) reactions" : "")")
+        .accessibilityIdentifier("reaction_button_\(emoji)")
     }
 }

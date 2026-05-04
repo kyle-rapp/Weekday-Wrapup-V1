@@ -53,6 +53,7 @@ struct FeedReactionRow: View {
             .disabled(uid == nil)
             .frame(minWidth: 44, minHeight: 44)
             .accessibilityLabel("More reactions")
+            .accessibilityIdentifier("reaction_button_➕")
         }
         .frame(maxWidth: .infinity)
     }
@@ -99,5 +100,6 @@ struct FeedReactionRow: View {
         .scaleEffect(selected ? 1.04 : 1.0)
         .animation(.spring(response: 0.32, dampingFraction: 0.68), value: selected)
         .accessibilityLabel("React with \(emoji), \(count) on this post")
+        .accessibilityIdentifier("reaction_button_\(emoji)")
     }
 }

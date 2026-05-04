@@ -58,6 +58,7 @@ struct InsightInputView: View {
                 .frame(minHeight: 100)
                 .modifier(InputViewStyle())
                 .tint(AppTheme.colors.primary)
+                .accessibilityIdentifier("insight_input_text")
                 .overlay(
                     Group {
                         if text.isEmpty {

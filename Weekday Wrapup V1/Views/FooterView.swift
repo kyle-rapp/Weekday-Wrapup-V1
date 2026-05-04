@@ -14,6 +14,7 @@ struct FooterView: View {
             Button(action: { isShowingShareOptions = true }) {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
+            .accessibilityIdentifier("share_button")
             .sheet(isPresented: $isShowingShareOptions) {
                 ShareOptionsView(isShowing: $isShowingShareOptions, checkInData: checkInData)
                     .environmentObject(auth)

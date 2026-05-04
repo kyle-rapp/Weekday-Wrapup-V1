@@ -69,11 +69,17 @@ final class AuthManager: ObservableObject {
                 let created = (data["createdAt"] as? Timestamp)?.dateValue() ?? Date()
                 let streak = Self.intFromFirestore(data["checkInStreak"])
                 let lastCheckIn = (data["lastCheckInDate"] as? Timestamp)?.dateValue()
+                let postCount = Self.intFromFirestore(data["postCount"])
+                let followerCount = Self.intFromFirestore(data["followerCount"])
+                let followingCount = Self.intFromFirestore(data["followingCount"])
                 currentUser = AppUser(
                     id: user.uid,
                     name: name,
                     email: email,
                     createdAt: created,
+                    postCount: postCount,
+                    followerCount: followerCount,
+                    followingCount: followingCount,
                     checkInStreak: streak,
                     lastCheckInDate: lastCheckIn
                 )
@@ -89,8 +95,11 @@ final class AuthManager: ObservableObject {
                     "email": email,
                     "createdAt": Timestamp(date: created),
                     "following": [String](),
-                    "checkInStreak": 0
-                ])
+                    "checkInStreak": 0,
+                    "postCount": 0,
+                    "followerCount": 0,
+                    "followingCount": 0
+                ], merge: true)
                 currentUser = AppUser(id: user.uid, name: name, email: email, createdAt: created)
             }
         } catch {
@@ -115,8 +124,11 @@ final class AuthManager: ObservableObject {
                 "email": email,
                 "createdAt": Timestamp(date: created),
                 "following": [String](),
-                "checkInStreak": 0
-            ])
+                "checkInStreak": 0,
+                "postCount": 0,
+                "followerCount": 0,
+                "followingCount": 0
+            ], merge: true)
             let change = result.user.createProfileChangeRequest()
             change.displayName = name
             try await change.commitChanges()
@@ -164,7 +176,7 @@ final class AuthManager: ObservableObject {
             user.lastCheckInDate = now
             currentUser = user
         } catch {
-            print("❌ Streak update failed: \(error.localizedDescription)")
+            AppLogger.error("Streak update failed: \(error.localizedDescription)")
         }
     }
 

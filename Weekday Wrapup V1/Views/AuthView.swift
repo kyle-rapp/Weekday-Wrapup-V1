@@ -74,6 +74,14 @@ struct AuthView: View {
                             .font(.subheadline)
                     }
                     .padding(.top, 8)
+
+                    #if DEBUG
+                    Divider()
+                        .padding(.top, 4)
+
+                    DebugUserSwitcher()
+                        .environmentObject(auth)
+                    #endif
                 }
                 .padding(24)
             }
@@ -90,6 +98,38 @@ struct AuthView: View {
         return emailOK && passOK
     }
 }
+
+#if DEBUG
+private struct DebugUserSwitcher: View {
+    @EnvironmentObject private var auth: AuthManager
+
+    private let testUser1 = (email: "testuser1@weekday.app", password: "Test1234!")
+    private let testUser2 = (email: "testuser2@weekday.app", password: "Test1234!")
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Debug user switcher")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Button("Login as TestUser1") {
+                    Task { await auth.signIn(email: testUser1.email, password: testUser1.password) }
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("debug_login_user1")
+
+                Button("Login as TestUser2") {
+                    Task { await auth.signIn(email: testUser2.email, password: testUser2.password) }
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("debug_login_user2")
+            }
+            .font(.caption)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+#endif
 
 #if DEBUG
 #Preview("Sign in") {

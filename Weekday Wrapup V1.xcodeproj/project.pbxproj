@@ -10,6 +10,8 @@
 		8D3C5A512F7A372D00B0687C /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = FBA09E001224DD00001A0002 /* FirebaseAuth */; };
 		8D3C5A522F7A372D00B0687C /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = FBA09E001224DD00001A0003 /* FirebaseFirestore */; };
 		8D3C5ACD2F7A37F700B0687C /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = FBA09E001224DD00001A0004 /* FirebaseCore */; };
+		8D3C5EA92FA6FD7700B0687C /* FirebaseDatabase in Frameworks */ = {isa = PBXBuildFile; productRef = 8D3C5EA82FA6FD7700B0687C /* FirebaseDatabase */; };
+		8D3C5EAC2FA703DB00B0687C /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 8D3C5EAB2FA703DB00B0687C /* FirebaseStorage */; };
 		A1B0WK012F7A620000B0687C /* WeatherKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1B0WK022F7A620000B0687C /* WeatherKit.framework */; };
 /* End PBXBuildFile section */
 
@@ -60,10 +62,12 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8D3C5EA92FA6FD7700B0687C /* FirebaseDatabase in Frameworks */,
 				8D3C5ACD2F7A37F700B0687C /* FirebaseCore in Frameworks */,
 				8D3C5A522F7A372D00B0687C /* FirebaseFirestore in Frameworks */,
 				8D3C5A512F7A372D00B0687C /* FirebaseAuth in Frameworks */,
 				A1B0WK012F7A620000B0687C /* WeatherKit.framework in Frameworks */,
+				8D3C5EAC2FA703DB00B0687C /* FirebaseStorage in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -92,6 +96,13 @@
 			name = "Recovered References";
 			sourceTree = "<group>";
 		};
+		8D3C5EAA2FA703B600B0687C /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		99D8767B2D0E80D1001224DD = {
 			isa = PBXGroup;
 			children = (
@@ -100,6 +111,7 @@
 				99D876A12D0E80D6001224DD /* Weekday Wrapup V1UITests */,
 				99D876852D0E80D1001224DD /* Products */,
 				8D3C5DB22FA334B600B0687C /* Recovered References */,
+				8D3C5EAA2FA703B600B0687C /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -136,6 +148,8 @@
 				FBA09E001224DD00001A0002 /* FirebaseAuth */,
 				FBA09E001224DD00001A0003 /* FirebaseFirestore */,
 				FBA09E001224DD00001A0004 /* FirebaseCore */,
+				8D3C5EA82FA6FD7700B0687C /* FirebaseDatabase */,
+				8D3C5EAB2FA703DB00B0687C /* FirebaseStorage */,
 			);
 			productName = "Weekday Wrapup V1";
 			productReference = 99D876842D0E80D1001224DD /* Weekday Wrapup V1.app */;
@@ -613,6 +627,16 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		8D3C5EA82FA6FD7700B0687C /* FirebaseDatabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FBA09E001224DD00001A0001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseDatabase;
+		};
+		8D3C5EAB2FA703DB00B0687C /* FirebaseStorage */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FBA09E001224DD00001A0001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseStorage;
+		};
 		FBA09E001224DD00001A0002 /* FirebaseAuth */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = FBA09E001224DD00001A0001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;

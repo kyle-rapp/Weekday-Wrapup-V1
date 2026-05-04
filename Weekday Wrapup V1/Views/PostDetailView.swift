@@ -140,9 +140,6 @@ struct PostDetailView: View {
                         }
                     }
 
-                    SoftSupportReactionBar(post: livePost, uid: uid)
-                        .environmentObject(firestore)
-
                     FeedReactionRow(
                         livePost: livePost,
                         uid: uid,

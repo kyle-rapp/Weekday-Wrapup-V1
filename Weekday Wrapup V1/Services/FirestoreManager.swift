@@ -1,6 +1,10 @@
 import Foundation
+import UIKit
 import FirebaseAuth
 import FirebaseFirestore
+#if canImport(FirebaseStorage)
+import FirebaseStorage
+#endif
 
 /// FILE: Services/FirestoreManager.swift
 /// Central Firestore access: real-time feed, comments subcollection, likes, reactions, following.
@@ -16,6 +20,8 @@ final class FirestoreManager: ObservableObject {
     @Published private(set) var myGroups: [SocialGroup] = []
     /// User-visible Firestore / auth errors (optional alert in views).
     @Published var errorMessage: String?
+    /// Latest context-aware suggestion from emotional pattern detection.
+    @Published var activeNudge: String?
 
     /// Lazily created so Xcode Previews never touch Firestore unless a Firebase-backed method runs.
     private lazy var db: Firestore = Firestore.firestore()
@@ -25,11 +31,18 @@ final class FirestoreManager: ObservableObject {
     private var commentsListener: ListenerRegistration?
     private var followingListener: ListenerRegistration?
     private var groupsListener: ListenerRegistration?
+    /// Personalized learning cache for the signed-in viewer.
+    private var profileCacheUserId: String?
+    private var cachedHelpfulProfile: [String: Int] = [:]
+    private var cachedSimilarUserIds: Set<String> = []
 
     private init() {}
 
     private static var isXcodePreview: Bool {
         ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
+    }
+    private var isUITestMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("--uitest-mode")
     }
 
     func clearErrorMessage() {
@@ -73,11 +86,11 @@ final class FirestoreManager: ObservableObject {
         do {
             let value = try await operation()
             errorMessage = nil
-            print("✅ \(successLog)")
+            AppLogger.log("[FIRESTORE] Write success: \(successLog)")
             return value
         } catch {
             let msg = error.localizedDescription
-            print("❌ Firestore error: \(msg)")
+            AppLogger.error("[FIRESTORE] Write failed: \(msg)")
             errorMessage = msg
             throw error
         }
@@ -85,7 +98,7 @@ final class FirestoreManager: ObservableObject {
 
     private func reportListenerError(_ context: String, error: Error) {
         let msg = error.localizedDescription
-        print("❌ \(context): \(msg)")
+        AppLogger.error("\(context): \(msg)")
         errorMessage = msg
     }
 
@@ -99,12 +112,22 @@ final class FirestoreManager: ObservableObject {
         followingIds = []
         joinedGroupIds = []
         myGroups = []
+        profileCacheUserId = nil
+        cachedHelpfulProfile = [:]
+        cachedSimilarUserIds = []
+        activeNudge = nil
         errorMessage = nil
     }
 
     // MARK: - Posts listener
 
     func startPostsListener() {
+        if isUITestMode {
+            if posts.isEmpty {
+                applyPreviewPosts(SeedDataManager.previewSeedPosts())
+            }
+            return
+        }
         stopPostsListener()
         postsListener = db.collection("posts")
             .order(by: "createdAt", descending: true)
@@ -128,6 +151,12 @@ final class FirestoreManager: ObservableObject {
 
     private func applyPostVisibilityFilter() {
         let uid = Auth.auth().currentUser?.uid
+        refreshPersonalLearningCacheIfNeeded(viewerId: uid)
+        if let uid {
+            cachedSimilarUserIds = similarUserIds(for: uid, in: allPostsRaw)
+        } else {
+            cachedSimilarUserIds = []
+        }
         let visible = allPostsRaw.filter { Self.postMeetsVisibility($0, viewerId: uid, joinedGroupIds: joinedGroupIds) }
         posts = rankPostsForFeed(visible, viewerId: uid)
     }
@@ -183,7 +212,78 @@ final class FirestoreManager: ObservableObject {
             score += 8
         }
 
+        let helpfulBoostTags = ["exercise", "mindfulness", "social", "rest"]
+        if post.helpfulTags.contains(where: { helpfulBoostTags.contains($0.lowercased()) }) {
+            score += 5
+        }
+
+        for tag in post.helpfulTags {
+            if let count = cachedHelpfulProfile[tag.lowercased()] {
+                score += Double(count) * 1.5
+            }
+        }
+
+        if cachedSimilarUserIds.contains(post.authorId) {
+            score += 6
+        }
+
         return score
+    }
+
+    private func refreshPersonalLearningCacheIfNeeded(viewerId: String?) {
+        guard let viewerId else {
+            profileCacheUserId = nil
+            cachedHelpfulProfile = [:]
+            return
+        }
+        guard profileCacheUserId != viewerId else { return }
+        profileCacheUserId = viewerId
+        Task { @MainActor in
+            let profile = await fetchUserHelpfulProfile(userId: viewerId)
+            cachedHelpfulProfile = profile
+            let visible = allPostsRaw.filter { Self.postMeetsVisibility($0, viewerId: viewerId, joinedGroupIds: joinedGroupIds) }
+            posts = rankPostsForFeed(visible, viewerId: viewerId)
+        }
+    }
+
+    private func similarUserIds(for viewerId: String, in feedPosts: [FeedPost]) -> Set<String> {
+        let grouped = Dictionary(grouping: feedPosts, by: \.authorId)
+        guard let mine = grouped[viewerId], !mine.isEmpty else { return [] }
+
+        let mySignature = buildUserSignature(entries: mine.map { CheckInData.fromPostedWrapup($0) })
+        guard mySignature.sampleSize >= 2 else { return [] }
+
+        let matches = grouped.compactMap { (authorId, posts) -> (String, Double)? in
+            guard authorId != viewerId else { return nil }
+            let signature = buildUserSignature(entries: posts.map { CheckInData.fromPostedWrapup($0) })
+            guard signature.sampleSize >= 2 else { return nil }
+            let score = similarityScore(mySignature, signature)
+            guard score >= 0.35 else { return nil }
+            return (authorId, score)
+        }
+
+        return Set(
+            matches
+                .sorted { $0.1 > $1.1 }
+                .prefix(20)
+                .map(\.0)
+        )
+    }
+
+    func similarityScore(_ userA: UserEmotionalSignature, _ userB: UserEmotionalSignature) -> Double {
+        let tagsA = Set(userA.topHelpfulTags.map { $0.lowercased() })
+        let tagsB = Set(userB.topHelpfulTags.map { $0.lowercased() })
+        let emotionsA = Set(userA.topEmotions.map { $0.lowercased() })
+        let emotionsB = Set(userB.topEmotions.map { $0.lowercased() })
+
+        let tagUnion = tagsA.union(tagsB)
+        let emotionUnion = emotionsA.union(emotionsB)
+        let tagScore = tagUnion.isEmpty ? 0 : Double(tagsA.intersection(tagsB).count) / Double(tagUnion.count)
+        let emotionScore = emotionUnion.isEmpty ? 0 : Double(emotionsA.intersection(emotionsB).count) / Double(emotionUnion.count)
+
+        let intensityDelta = abs(userA.averageIntensity - userB.averageIntensity)
+        let intensityScore = max(0, 1 - (intensityDelta / 10))
+        return (tagScore * 0.5) + (emotionScore * 0.35) + (intensityScore * 0.15)
     }
 
     private func applyFeedOverloadCaps(_ ranked: [FeedPost]) -> [FeedPost] {
@@ -237,6 +337,11 @@ final class FirestoreManager: ObservableObject {
     // MARK: - Groups (`groups` collection)
 
     func startGroupsListener(userId: String) {
+        if isUITestMode {
+            myGroups = []
+            joinedGroupIds = []
+            return
+        }
         #if DEBUG
         if Self.isXcodePreview { return }
         #endif
@@ -681,7 +786,27 @@ final class FirestoreManager: ObservableObject {
 
     // MARK: - Following
 
+    private func followersCollection(userId: String) -> CollectionReference {
+        db.collection("followers").document(userId).collection("userFollowers")
+    }
+
+    private func followingCollection(userId: String) -> CollectionReference {
+        db.collection("following").document(userId).collection("userFollowing")
+    }
+
+    private func insightsSignatureRef(userId: String) -> DocumentReference {
+        db.collection("users").document(userId).collection("insights").document("signature")
+    }
+
+    private func insightsProfileRef(userId: String) -> DocumentReference {
+        db.collection("users").document(userId).collection("insights").document("profile")
+    }
+
     func startFollowingListener(userId: String) {
+        if isUITestMode {
+            followingIds = []
+            return
+        }
         #if DEBUG
         if Self.isXcodePreview { return }
         #endif
@@ -714,6 +839,58 @@ final class FirestoreManager: ObservableObject {
         followingIds.contains(userId)
     }
 
+    func fetchFollowerCount(userId: String) async -> Int {
+        if Self.isXcodePreview { return 0 }
+        do {
+            let aggregate = try await followersCollection(userId: userId).count.getAggregation(source: .server)
+            return Int(truncating: aggregate.count)
+        } catch {
+            AppLogger.error("fetchFollowerCount failed: \(error.localizedDescription)")
+            return 0
+        }
+    }
+
+    func fetchFollowingCount(userId: String) async -> Int {
+        if Self.isXcodePreview { return 0 }
+        do {
+            let aggregate = try await followingCollection(userId: userId).count.getAggregation(source: .server)
+            return Int(truncating: aggregate.count)
+        } catch {
+            AppLogger.error("fetchFollowingCount failed: \(error.localizedDescription)")
+            return 0
+        }
+    }
+
+    func fetchFollowers(userId: String, limit: Int = 100) async -> [AppUser] {
+        if Self.isXcodePreview { return [] }
+        do {
+            let docs = try await followersCollection(userId: userId)
+                .order(by: "createdAt", descending: true)
+                .limit(to: limit)
+                .getDocuments()
+            let ids = docs.documents.map(\.documentID)
+            return await fetchUsersByIds(ids)
+        } catch {
+            AppLogger.error("fetchFollowers failed: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    func fetchFollowingUsers(userId: String, limit: Int = 100) async -> [AppUser] {
+        if Self.isXcodePreview { return [] }
+        do {
+            let docs = try await followingCollection(userId: userId)
+                .order(by: "createdAt", descending: true)
+                .limit(to: limit)
+                .getDocuments()
+            let ids = docs.documents.map(\.documentID)
+            return await fetchUsersByIds(ids)
+        } catch {
+            AppLogger.error("fetchFollowingUsers failed: \(error.localizedDescription)")
+            return []
+        }
+    }
+
     /// Display name from `users/{userId}` (best-effort).
     func userDisplayName(userId: String) async -> String {
         #if DEBUG
@@ -730,24 +907,247 @@ final class FirestoreManager: ObservableObject {
         return "User \(String(userId.prefix(8)))"
     }
 
+    /// App-level profile summary with social counts (distinct from `UserProfile` in profile system).
+    func fetchAppUserProfile(userId: String) async -> AppUser? {
+        if Self.isXcodePreview { return nil }
+        do {
+            let snap = try await db.collection("users").document(userId).getDocument()
+            guard let data = snap.data() else { return nil }
+            return appUserFromDocument(id: userId, data: data)
+        } catch {
+            AppLogger.error("fetchAppUserProfile failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    func fetchUserProfile(userId: String, includeSocialCounts: Bool) async -> AppUser? {
+        let user = await fetchAppUserProfile(userId: userId)
+        guard includeSocialCounts, var user else { return user }
+        async let followers = fetchFollowerCount(userId: userId)
+        async let following = fetchFollowingCount(userId: userId)
+        user.followerCount = await followers
+        user.followingCount = await following
+        return user
+    }
+
+    func searchUsers(query: String) async -> [AppUser] {
+        if Self.isXcodePreview { return [] }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let request: Query
+            if trimmed.isEmpty {
+                request = db.collection("users")
+                    .order(by: "name")
+                    .limit(to: 20)
+            } else {
+                let end = "\(trimmed)\u{f8ff}"
+                request = db.collection("users")
+                    .order(by: "name")
+                    .start(at: [trimmed])
+                    .end(at: [end])
+                    .limit(to: 20)
+            }
+            let docs = try await request.getDocuments()
+            return docs.documents.compactMap { appUserFromDocument(id: $0.documentID, data: $0.data()) }
+        } catch {
+            AppLogger.error("searchUsers failed: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    func recommendUsers(for user: AppUser) async -> [AppUser] {
+        if Self.isXcodePreview { return [] }
+        do {
+            async let queryUsers = db.collection("users").order(by: "name").limit(to: 80).getDocuments()
+            async let myFollowingDocs = followingCollection(userId: user.id).getDocuments()
+            async let mySignatureSnap = insightsSignatureRef(userId: user.id).getDocument()
+            async let myProfileSnap = insightsProfileRef(userId: user.id).getDocument()
+
+            let allUsers = try await queryUsers.documents
+            let followingSet = Set(try await myFollowingDocs.documents.map(\.documentID))
+            let mySignature = parseSignature(document: try await mySignatureSnap)
+            let myProfileTags = parseHelpfulTags(document: try await myProfileSnap)
+            let myTopEmotions = Set(mySignature?.topEmotions.map { $0.lowercased() } ?? [])
+
+            var candidates: [(AppUser, Double)] = []
+            for doc in allUsers {
+                guard doc.documentID != user.id else { continue }
+                guard !followingSet.contains(doc.documentID) else { continue }
+                guard let appUser = appUserFromDocument(id: doc.documentID, data: doc.data()) else { continue }
+
+                async let theirSignatureSnap = insightsSignatureRef(userId: appUser.id).getDocument()
+                async let theirProfileSnap = insightsProfileRef(userId: appUser.id).getDocument()
+                async let theirFollowerCount = fetchFollowerCount(userId: appUser.id)
+                async let theirFollowingDocs = followingCollection(userId: appUser.id).limit(to: 120).getDocuments()
+
+                let theirSignature = parseSignature(document: try await theirSignatureSnap)
+                let theirTags = parseHelpfulTags(document: try await theirProfileSnap)
+                let theirsTopEmotions = Set(theirSignature?.topEmotions.map { $0.lowercased() } ?? [])
+                let theirFollowingSet = Set((try await theirFollowingDocs).documents.map(\.documentID))
+
+                let emotionOverlap = Double(myTopEmotions.intersection(theirsTopEmotions).count)
+                let sharedHelpfulTags = Double(myProfileTags.intersection(theirTags).count)
+                let mutualConnectionsWeight = Double(followingSet.intersection(theirFollowingSet).count)
+                let activityWeight = min(Double(try await theirFollowerCount), 25.0) / 25.0
+
+                let score = (emotionOverlap * 0.4)
+                    + (sharedHelpfulTags * 0.3)
+                    + (mutualConnectionsWeight * 0.2)
+                    + (activityWeight * 0.1)
+                guard score > 0 else { continue }
+                candidates.append((appUser, score))
+            }
+            return candidates
+                .sorted { lhs, rhs in
+                    if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+                    return lhs.0.name.localizedCaseInsensitiveCompare(rhs.0.name) == .orderedAscending
+                }
+                .prefix(20)
+                .map(\.0)
+        } catch {
+            AppLogger.error("recommendUsers failed: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    private func parseSignature(document: DocumentSnapshot) -> UserEmotionalSignature? {
+        guard let data = document.data() else { return nil }
+        let averageIntensity = (data["averageIntensity"] as? Double)
+            ?? (data["averageIntensity"] as? NSNumber)?.doubleValue
+            ?? 0
+        let topEmotions = data["topEmotions"] as? [String] ?? []
+        let topHelpfulTags = data["topHelpfulTags"] as? [String] ?? []
+        let sampleSize = FirestoreManager.intFromFirestore(data["sampleSize"])
+        let updatedAt = (data["updatedAt"] as? Timestamp)?.dateValue()
+        return UserEmotionalSignature(
+            averageIntensity: averageIntensity,
+            topEmotions: topEmotions,
+            topHelpfulTags: topHelpfulTags,
+            sampleSize: sampleSize,
+            updatedAt: updatedAt
+        )
+    }
+
+    private func parseHelpfulTags(document: DocumentSnapshot) -> Set<String> {
+        guard let data = document.data(),
+              let raw = data["helpfulTagCounts"] as? [String: Any]
+        else { return [] }
+        return Set(raw.keys.map { $0.lowercased() })
+    }
+
+    private func fetchUsersByIds(_ ids: [String]) async -> [AppUser] {
+        if ids.isEmpty { return [] }
+        var users: [AppUser] = []
+        for id in ids {
+            if let user = await fetchAppUserProfile(userId: id) {
+                users.append(user)
+            }
+        }
+        return users
+    }
+
+    private func appUserFromDocument(id: String, data: [String: Any]) -> AppUser? {
+        let name = (data["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if name.isEmpty { return nil }
+        let email = data["email"] as? String ?? ""
+        let createdAt = (data["createdAt"] as? Timestamp)?.dateValue() ?? Date()
+        let checkInStreak = FirestoreManager.intFromFirestore(data["checkInStreak"])
+        let lastCheckInDate = (data["lastCheckInDate"] as? Timestamp)?.dateValue()
+        let postCount = FirestoreManager.intFromFirestore(data["postCount"])
+        let followerCount = FirestoreManager.intFromFirestore(data["followerCount"])
+        let followingCount = FirestoreManager.intFromFirestore(data["followingCount"])
+        return AppUser(
+            id: id,
+            name: name,
+            email: email,
+            createdAt: createdAt,
+            postCount: postCount,
+            followerCount: followerCount,
+            followingCount: followingCount,
+            checkInStreak: checkInStreak,
+            lastCheckInDate: lastCheckInDate
+        )
+    }
+
     func setFollowing(currentUserId: String, targetUserId: String, follow: Bool) async throws {
+        if follow {
+            try await followUser(currentUserId: currentUserId, targetUserId: targetUserId)
+        } else {
+            try await unfollowUser(currentUserId: currentUserId, targetUserId: targetUserId)
+        }
+    }
+
+    func followUser(currentUserId: String, targetUserId: String) async throws {
         guard currentUserId != targetUserId else { return }
         _ = try requireAuthUser(matchingExpectedUid: currentUserId)
-        try await runWrite(successLog: follow ? "Now following user" : "Unfollowed user") {
-            let ref = self.db.collection("users").document(currentUserId)
+        try await runWrite(successLog: "Now following user") {
+            let currentRef = self.db.collection("users").document(currentUserId)
+            let targetRef = self.db.collection("users").document(targetUserId)
             let followDocId = "\(currentUserId)__\(targetUserId)"
-            let followRef = self.db.collection("follows").document(followDocId)
-            if follow {
-                try await ref.updateData(["following": FieldValue.arrayUnion([targetUserId])])
-                try await followRef.setData([
-                    "followerId": currentUserId,
-                    "followingId": targetUserId,
-                    "createdAt": FieldValue.serverTimestamp()
-                ], merge: true)
-            } else {
-                try await ref.updateData(["following": FieldValue.arrayRemove([targetUserId])])
-                try await followRef.delete()
+            let legacyFollowRef = self.db.collection("follows").document(followDocId)
+            let followerEdgeRef = self.followersCollection(userId: targetUserId).document(currentUserId)
+            let followingEdgeRef = self.followingCollection(userId: currentUserId).document(targetUserId)
+            let alreadyFollowing = try await followingEdgeRef.getDocument()
+            guard !alreadyFollowing.exists else {
+                self.followingIds.insert(targetUserId)
+                return
             }
+
+            let batch = self.db.batch()
+            batch.setData([
+                "followerId": currentUserId,
+                "createdAt": FieldValue.serverTimestamp()
+            ], forDocument: followerEdgeRef, merge: true)
+            batch.setData([
+                "followingId": targetUserId,
+                "createdAt": FieldValue.serverTimestamp()
+            ], forDocument: followingEdgeRef, merge: true)
+            batch.setData([
+                "followerId": currentUserId,
+                "followingId": targetUserId,
+                "createdAt": FieldValue.serverTimestamp()
+            ], forDocument: legacyFollowRef, merge: true)
+            batch.setData([
+                "following": FieldValue.arrayUnion([targetUserId]),
+                "followingCount": FieldValue.increment(Int64(1))
+            ], forDocument: currentRef, merge: true)
+            batch.setData([
+                "followerCount": FieldValue.increment(Int64(1))
+            ], forDocument: targetRef, merge: true)
+            try await batch.commit()
+            followingIds.insert(targetUserId)
+        }
+    }
+
+    func unfollowUser(currentUserId: String, targetUserId: String) async throws {
+        guard currentUserId != targetUserId else { return }
+        _ = try requireAuthUser(matchingExpectedUid: currentUserId)
+        try await runWrite(successLog: "Unfollowed user") {
+            let currentRef = self.db.collection("users").document(currentUserId)
+            let targetRef = self.db.collection("users").document(targetUserId)
+            let followDocId = "\(currentUserId)__\(targetUserId)"
+            let legacyFollowRef = self.db.collection("follows").document(followDocId)
+            let followerEdgeRef = self.followersCollection(userId: targetUserId).document(currentUserId)
+            let followingEdgeRef = self.followingCollection(userId: currentUserId).document(targetUserId)
+            let existing = try await followingEdgeRef.getDocument()
+            guard existing.exists else {
+                self.followingIds.remove(targetUserId)
+                return
+            }
+
+            let batch = self.db.batch()
+            batch.deleteDocument(followerEdgeRef)
+            batch.deleteDocument(followingEdgeRef)
+            batch.deleteDocument(legacyFollowRef)
+            batch.setData([
+                "following": FieldValue.arrayRemove([targetUserId]),
+                "followingCount": FieldValue.increment(Int64(-1))
+            ], forDocument: currentRef, merge: true)
+            batch.setData([
+                "followerCount": FieldValue.increment(Int64(-1))
+            ], forDocument: targetRef, merge: true)
+            try await batch.commit()
+            followingIds.remove(targetUserId)
         }
     }
 
@@ -774,7 +1174,7 @@ final class FirestoreManager: ObservableObject {
 
     /// `true` if the user may create another post today (max 3 per local day).
     func canCreatePost(userId: String) async -> Bool {
-        if Self.isXcodePreview { return true }
+        if Self.isXcodePreview || isUITestMode { return true }
         do {
             let n = try await postsCreatedTodayCount(forUserId: userId)
             if n >= 3 {
@@ -792,26 +1192,43 @@ final class FirestoreManager: ObservableObject {
     // MARK: - Create post (from check-in)
 
     /// Creates a feed post. Never throws — returns `false` and sets `errorMessage` on any failure (no force unwraps).
-    func createPost(from checkIn: CheckInData, authorId: String, authorName: String) async -> Bool {
+    func createPost(
+        from checkIn: CheckInData,
+        authorId: String,
+        authorName: String,
+        helpfulTags: [String]? = nil
+    ) async -> Bool {
+        if isUITestMode {
+            let post = makeUITestPost(
+                from: checkIn,
+                authorId: authorId,
+                authorName: authorName,
+                helpfulTags: helpfulTags
+            )
+            posts.insert(post, at: 0)
+            allPostsRaw = posts
+            print("[POST] UI test local post created: \(post.id)")
+            return true
+        }
         if Self.isXcodePreview {
-            print("⚠️ createPost skipped (Xcode Preview)")
+            print("[POST] createPost skipped in Xcode Preview")
             return false
         }
 
         guard let user = Auth.auth().currentUser else {
-            print("❌ No authenticated user")
+            print("[ERROR] No authenticated user for post create")
             errorMessage = "You must be signed in."
             return false
         }
         guard user.uid == authorId else {
-            print("❌ Auth user mismatch (signed-in uid vs authorId)")
+            print("[ERROR] Auth user mismatch for post create")
             errorMessage = "Session error. Please sign in again."
             return false
         }
 
         let trimmedName = authorName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
-            print("❌ Invalid post: empty userName")
+            print("[ERROR] Invalid post payload: empty userName")
             errorMessage = "Profile name is missing. Update your profile and try again."
             return false
         }
@@ -824,13 +1241,12 @@ final class FirestoreManager: ObservableObject {
 
         let hasContent = !emoji.isEmpty || !insight.isEmpty || !whoops.isEmpty || !weekly.isEmpty || !monthly.isEmpty
         guard hasContent else {
-            print("❌ Invalid post: no usable content (emoji, insight, whoops, or goals)")
+            print("[ERROR] Invalid post payload: no usable content")
             errorMessage = "Add an emoji or something about your week before posting."
             return false
         }
 
-        print("🚀 Attempting to create post")
-        print("User ID:", user.uid)
+        print("[POST] Creating post for user: \(user.uid)")
 
         var reactionsPayload: [String: Any] = [:]
         for (key, count) in FirestoreManager.defaultReactionCounts() {
@@ -840,7 +1256,7 @@ final class FirestoreManager: ObservableObject {
         if checkIn.visibility == .groups {
             let g = checkIn.sharedGroupIds ?? []
             guard !g.isEmpty else {
-                print("❌ Groups visibility requires at least one group")
+                print("[ERROR] Group visibility missing selected group")
                 errorMessage = "Choose a group to share with."
                 return false
             }
@@ -848,6 +1264,24 @@ final class FirestoreManager: ObservableObject {
 
         let goalLine: String = weekly.isEmpty ? monthly : weekly
         let displayEmoji = emoji.isEmpty ? "✨" : emoji
+        let trimmedTitle = checkIn.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTitle = trimmedTitle.isEmpty ? "Daily reflection 🌿" : trimmedTitle
+
+        var uploadedImageURL = ""
+        if let image = checkIn.checkInImage {
+            do {
+                let url = try await uploadImage(image, userId: authorId)
+                uploadedImageURL = url.absoluteString
+            } catch {
+                if (error as NSError).code == 501 {
+                    errorMessage = error.localizedDescription
+                } else {
+                    errorMessage = "Couldn't upload image. Please try again."
+                }
+                AppLogger.error("Image upload failed: \(error.localizedDescription)")
+                return false
+            }
+        }
 
         var data: [String: Any] = [
             "userId": authorId,
@@ -858,6 +1292,8 @@ final class FirestoreManager: ObservableObject {
             "emotionalInsight": insight,
             "whoopsText": whoops,
             "weeklyGoal": goalLine,
+            "title": resolvedTitle,
+            "imageURL": uploadedImageURL,
             "weekNumber": checkIn.weekNumber,
             "selectedEmotions": checkIn.selectedEmotionsOrdered.isEmpty
                 ? Array(checkIn.selectedEmotions).sorted()
@@ -881,8 +1317,12 @@ final class FirestoreManager: ObservableObject {
             data["whatHelped"] = tip
             data["helpfulText"] = tip
         }
-        if let tags = checkIn.helpfulTags, !tags.isEmpty {
-            data["helpfulTags"] = tags
+        let autoTags = HelpfulTagger.extractTags(from: checkIn.whatHelped ?? "")
+        let mergedHelpfulTags = Array(
+            Set((checkIn.helpfulTags ?? []) + (helpfulTags ?? []) + autoTags)
+        ).sorted()
+        if !mergedHelpfulTags.isEmpty {
+            data["helpfulTags"] = mergedHelpfulTags
         }
         if let g = checkIn.sharedGroupIds, !g.isEmpty {
             data["sharedGroupIds"] = g
@@ -890,15 +1330,221 @@ final class FirestoreManager: ObservableObject {
 
         do {
             let ref = db.collection("posts").document()
-            try await ref.setData(data)
-            print("✅ Post created")
+            try await ref.setData(data, merge: true)
+            print("[POST] Post created successfully")
+            do {
+                try await db.collection("users").document(authorId).setData([
+                    "postCount": FieldValue.increment(Int64(1))
+                ], merge: true)
+            } catch {
+                AppLogger.error("Post count increment failed: \(error.localizedDescription)")
+            }
+            if !mergedHelpfulTags.isEmpty {
+                do {
+                    try await updateHelpfulProfile(userId: authorId, tags: mergedHelpfulTags)
+                } catch {
+                    AppLogger.error("Helpful profile update failed: \(error.localizedDescription)")
+                }
+            }
+            do {
+                try await updateUserSignature(userId: authorId, latestCheckIn: checkIn, helpfulTags: mergedHelpfulTags)
+            } catch {
+                AppLogger.error("Emotional signature update failed: \(error.localizedDescription)")
+            }
+            do {
+                try await refreshSmartNudge(userId: authorId, latestCheckIn: checkIn)
+            } catch {
+                AppLogger.error("Smart nudge update failed: \(error.localizedDescription)")
+            }
+            if authorId == profileCacheUserId {
+                cachedHelpfulProfile = await fetchUserHelpfulProfile(userId: authorId)
+            }
             errorMessage = nil
             return true
         } catch {
             let msg = error.localizedDescription
-            print("❌ Failed to create post:", msg)
+            print("[ERROR] Post creation failed: \(msg)")
             errorMessage = msg
             return false
+        }
+    }
+
+    private func updateHelpfulProfile(userId: String, tags: [String]) async throws {
+        guard !tags.isEmpty else { return }
+        let ref = helpfulInsightsProfileRef(userId: userId)
+        let snap = try await ref.getDocument()
+        let existing = (snap.data()?["helpfulTagCounts"] as? [String: Any]) ?? [:]
+        var counts: [String: Int] = [:]
+        for (key, value) in existing {
+            counts[key.lowercased()] = FirestoreManager.intFromFirestore(value)
+        }
+        for tag in tags.map({ $0.lowercased() }) {
+            counts[tag, default: 0] += 1
+        }
+        try await ref.setData([
+            "helpfulTagCounts": counts,
+            "lastUpdated": FieldValue.serverTimestamp()
+        ], merge: true)
+    }
+
+    private func updateUserSignature(userId: String, latestCheckIn: CheckInData, helpfulTags: [String]) async throws {
+        let historical = wrapupHistoryEntries(forUserId: userId)
+        let latest = CheckInData(
+            userName: latestCheckIn.userName,
+            astrologySign: latestCheckIn.astrologySign,
+            weekNumber: latestCheckIn.weekNumber,
+            weeklyEmoji: latestCheckIn.weeklyEmoji,
+            checkInImage: nil,
+            selectedEmotions: latestCheckIn.selectedEmotions,
+            emotionalInsight: latestCheckIn.emotionalInsight,
+            whoopsText: latestCheckIn.whoopsText,
+            poopsText: latestCheckIn.poopsText,
+            weeklyGoal: latestCheckIn.weeklyGoal,
+            monthlyGoal: latestCheckIn.monthlyGoal,
+            profileImage: nil,
+            checkInVideoURL: nil,
+            drawingImage: nil,
+            visibility: latestCheckIn.visibility,
+            date: Date(),
+            intensity: latestCheckIn.intensity,
+            whatHelped: latestCheckIn.whatHelped,
+            manualEntry: latestCheckIn.manualEntry,
+            helpfulTags: helpfulTags.isEmpty ? latestCheckIn.helpfulTags : helpfulTags,
+            sharedGroupIds: latestCheckIn.sharedGroupIds,
+            title: latestCheckIn.title,
+            imageURL: latestCheckIn.imageURL,
+            selectedEmotionsOrdered: latestCheckIn.selectedEmotionsOrdered
+        )
+        let signature = buildUserSignature(entries: [latest] + historical)
+        try await emotionalSignatureRef(userId: userId).setData(signature.asFirestoreDictionary(), merge: true)
+    }
+
+    private func buildUserSignature(entries: [CheckInData]) -> UserEmotionalSignature {
+        guard !entries.isEmpty else { return UserEmotionalSignature() }
+
+        var emotionCounts: [String: Int] = [:]
+        var tagCounts: [String: Int] = [:]
+        var intensities: [Int] = []
+
+        for entry in entries {
+            for emotion in entry.selectedEmotions {
+                let key = emotion.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard !key.isEmpty else { continue }
+                emotionCounts[key, default: 0] += 1
+            }
+            for tag in (entry.helpfulTags ?? []) {
+                let key = tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard !key.isEmpty else { continue }
+                tagCounts[key, default: 0] += 1
+            }
+            if let intensity = entry.intensity {
+                intensities.append(intensity)
+            }
+        }
+
+        let avgIntensity: Double = intensities.isEmpty
+            ? 0
+            : Double(intensities.reduce(0, +)) / Double(intensities.count)
+
+        let topEmotions = emotionCounts
+            .sorted { lhs, rhs in
+                if lhs.value != rhs.value { return lhs.value > rhs.value }
+                return lhs.key < rhs.key
+            }
+            .prefix(5)
+            .map(\.key)
+
+        let topTags = tagCounts
+            .sorted { lhs, rhs in
+                if lhs.value != rhs.value { return lhs.value > rhs.value }
+                return lhs.key < rhs.key
+            }
+            .prefix(5)
+            .map(\.key)
+
+        return UserEmotionalSignature(
+            averageIntensity: avgIntensity,
+            topEmotions: topEmotions,
+            topHelpfulTags: topTags,
+            sampleSize: entries.count,
+            updatedAt: Date()
+        )
+    }
+
+    func detectEmotionalPattern(entries: [CheckInData]) -> EmotionalPattern? {
+        let sorted = entries.sorted { $0.date < $1.date }
+        guard !sorted.isEmpty else { return nil }
+
+        let recent = Array(sorted.suffix(5))
+        var highIntensityStreak = 0
+        for entry in recent.reversed() {
+            if (entry.intensity ?? 0) >= 8 {
+                highIntensityStreak += 1
+            } else {
+                break
+            }
+        }
+        if highIntensityStreak >= 3 {
+            return EmotionalPattern(
+                kind: "high_intensity_streak",
+                message: "Your stress has been elevated for a few days. Try a gentle reset.",
+                suggestedActions: ["walk", "rest", "breathe"]
+            )
+        }
+
+        let tracked = ["anxious", "sad", "overwhelmed", "lonely"]
+        let recentLabels = recent.map { $0.firstSelectedEmotionLabel.lowercased() }
+        for emotion in tracked {
+            let count = recentLabels.filter { $0.contains(emotion) }.count
+            if count >= 3 {
+                return EmotionalPattern(
+                    kind: "\(emotion)_streak",
+                    message: "You have felt \(emotion) often this week. A small supportive action can help.",
+                    suggestedActions: emotion == "anxious" ? ["walk", "breathe", "journal"] : ["talk", "rest", "journal"]
+                )
+            }
+        }
+        return nil
+    }
+
+    private func refreshSmartNudge(userId: String, latestCheckIn: CheckInData) async throws {
+        let entries = [latestCheckIn] + wrapupHistoryEntries(forUserId: userId)
+        guard let pattern = detectEmotionalPattern(entries: entries) else {
+            if activeNudge != nil { activeNudge = nil }
+            return
+        }
+        let message = "\(pattern.message) Suggested: \(pattern.suggestedActions.joined(separator: ", "))"
+        activeNudge = message
+        let ref = nudgesRef(userId: userId).document()
+        try await ref.setData([
+            "kind": pattern.kind,
+            "message": pattern.message,
+            "suggestedActions": pattern.suggestedActions,
+            "createdAt": FieldValue.serverTimestamp()
+        ], merge: true)
+    }
+
+    func refreshActiveNudge(userId: String) async {
+        if Self.isXcodePreview {
+            activeNudge = nil
+            return
+        }
+        do {
+            let snap = try await nudgesRef(userId: userId)
+                .order(by: "createdAt", descending: true)
+                .limit(to: 1)
+                .getDocuments()
+            guard let doc = snap.documents.first else {
+                activeNudge = nil
+                return
+            }
+            let data = doc.data()
+            let message = data["message"] as? String ?? ""
+            let actions = data["suggestedActions"] as? [String] ?? []
+            activeNudge = message.isEmpty ? nil : "\(message) Suggested: \(actions.joined(separator: ", "))"
+        } catch {
+            AppLogger.error("refreshActiveNudge failed: \(error.localizedDescription)")
+            activeNudge = nil
         }
     }
 
@@ -953,10 +1599,140 @@ final class FirestoreManager: ObservableObject {
     // MARK: - Reactions (transaction: one per user, toggle same, switch emoji)
 
     func applyReaction(postId: String, userId: String, emoji: String) async throws {
+        if isUITestMode {
+            if let idx = posts.firstIndex(where: { $0.id == postId }) {
+                var post = posts[idx]
+                let previous = post.userReactions[userId]
+                if previous == emoji {
+                    post.userReactions[userId] = nil
+                    post.reactions[emoji] = max(0, (post.reactions[emoji] ?? 0) - 1)
+                } else if let previous {
+                    post.reactions[previous] = max(0, (post.reactions[previous] ?? 0) - 1)
+                    post.reactions[emoji, default: 0] += 1
+                    post.userReactions[userId] = emoji
+                } else {
+                    post.reactions[emoji, default: 0] += 1
+                    post.userReactions[userId] = emoji
+                }
+                posts[idx] = post
+                allPostsRaw = posts
+            }
+            print("[REACTION] UI test local reaction applied post=\(postId) emoji=\(emoji)")
+            return
+        }
         _ = try requireAuthUser(matchingExpectedUid: userId)
+        AppLogger.log("[REACTION] Applying reaction \(emoji) on post \(postId)")
         try await runWrite(successLog: "Reaction updated") {
             try await self.performApplyReaction(postId: postId, userId: userId, emoji: emoji)
         }
+    }
+
+    private func makeUITestPost(
+        from checkIn: CheckInData,
+        authorId: String,
+        authorName: String,
+        helpfulTags: [String]? = nil
+    ) -> FeedPost {
+        let insight = checkIn.emotionalInsight.trimmingCharacters(in: .whitespacesAndNewlines)
+        let emoji = checkIn.weeklyEmoji.trimmingCharacters(in: .whitespacesAndNewlines)
+        let whoops = checkIn.whoopsText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let weekly = checkIn.weeklyGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let monthly = checkIn.monthlyGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let goalLine = weekly.isEmpty ? monthly : weekly
+        let selected = checkIn.selectedEmotionsOrdered.isEmpty
+            ? Array(checkIn.selectedEmotions).sorted()
+            : checkIn.selectedEmotionsOrdered
+
+        let autoTags = HelpfulTagger.extractTags(from: checkIn.whatHelped ?? "")
+        let mergedHelpfulTags = Array(
+            Set((checkIn.helpfulTags ?? []) + (helpfulTags ?? []) + autoTags)
+        ).sorted()
+
+        return FeedPost(
+            id: "ui_post_\(UUID().uuidString)",
+            authorId: authorId,
+            user: FeedUser(id: authorId, name: authorName, streak: 0),
+            emoji: emoji.isEmpty ? "✨" : emoji,
+            insight: insight,
+            whoop: whoops,
+            goal: goalLine,
+            title: checkIn.title,
+            imageURL: checkIn.imageURL,
+            selectedEmotions: selected,
+            visibility: checkIn.visibility,
+            intensity: checkIn.intensity,
+            whatHelped: checkIn.whatHelped,
+            helpfulTags: mergedHelpfulTags,
+            createdAt: Date()
+        )
+    }
+
+    func topHelpfulTagsThisWeek() -> [String] {
+        let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)
+        let recent = posts.filter {
+            guard let date = $0.createdAt else { return false }
+            return date > cutoff
+        }
+        var counts: [String: Int] = [:]
+        for post in recent {
+            for tag in post.helpfulTags {
+                counts[tag, default: 0] += 1
+            }
+        }
+        return counts
+            .sorted { $0.value > $1.value }
+            .map(\.key)
+            .prefix(3)
+            .map { $0 }
+    }
+
+    func uploadImage(_ image: UIImage, userId: String) async throws -> URL {
+#if canImport(FirebaseStorage)
+        print("📤 Uploading image for user: \(userId)")
+        guard let data = image.jpegData(compressionQuality: 0.84) else {
+            throw NSError(domain: "FirestoreManager", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid image data"])
+        }
+        let path = "post_images/\(userId)/\(UUID().uuidString).jpg"
+        print("📤 Upload path: \(path)")
+        let ref = Storage.storage().reference().child(path)
+        let metadata = StorageMetadata()
+        metadata.contentType = "image/jpeg"
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            ref.putData(data, metadata: metadata) { _, error in
+                if let error {
+                    print("❌ Firebase Storage upload error: \(error.localizedDescription)")
+                    continuation.resume(throwing: error)
+                } else {
+                    print("✅ Firebase Storage upload succeeded for path: \(path)")
+                    continuation.resume(returning: ())
+                }
+            }
+        }
+
+        let downloadURL = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+            ref.downloadURL { url, error in
+                if let error {
+                    print("❌ Firebase Storage downloadURL error: \(error.localizedDescription)")
+                    continuation.resume(throwing: error)
+                } else if let url {
+                    print("✅ Firebase Storage URL: \(url.absoluteString)")
+                    continuation.resume(returning: url)
+                } else {
+                    continuation.resume(throwing: NSError(domain: "FirestoreManager", code: 500, userInfo: [NSLocalizedDescriptionKey: "Missing download URL"]))
+                }
+            }
+        }
+        return downloadURL
+#else
+        let message = "FirebaseStorage SDK is not linked. Add FirebaseStorage to the app target to enable image uploads."
+        AppLogger.error(message)
+        throw NSError(
+            domain: "FirestoreManager",
+            code: 501,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
+#endif
     }
 
     private func performApplyReaction(postId: String, userId: String, emoji: String) async throws {
@@ -1173,6 +1949,25 @@ final class FirestoreManager: ObservableObject {
         } catch {
             print("⚠️ fetchRecommendationFeedbackSummary: \(error.localizedDescription)")
             return []
+        }
+    }
+
+    func fetchUserHelpfulProfile(userId: String) async -> [String: Int] {
+        if Self.isXcodePreview { return [:] }
+        do {
+            let snap = try await helpfulInsightsProfileRef(userId: userId).getDocument()
+            guard let data = snap.data(),
+                  let raw = data["helpfulTagCounts"] as? [String: Any]
+            else { return [:] }
+
+            var counts: [String: Int] = [:]
+            for (tag, value) in raw {
+                counts[tag.lowercased()] = FirestoreManager.intFromFirestore(value)
+            }
+            return counts
+        } catch {
+            AppLogger.error("fetchUserHelpfulProfile failed: \(error.localizedDescription)")
+            return [:]
         }
     }
 
@@ -1393,6 +2188,22 @@ final class FirestoreManager: ObservableObject {
         db.collection("users").document(userId).collection("supportInbox")
     }
 
+    private func dopamineMenuRef(userId: String) -> DocumentReference {
+        db.collection("dopamineMenus").document(userId)
+    }
+
+    private func helpfulInsightsProfileRef(userId: String) -> DocumentReference {
+        db.collection("users").document(userId).collection("insights").document("profile")
+    }
+
+    private func emotionalSignatureRef(userId: String) -> DocumentReference {
+        db.collection("users").document(userId).collection("insights").document("signature")
+    }
+
+    private func nudgesRef(userId: String) -> CollectionReference {
+        db.collection("users").document(userId).collection("nudges")
+    }
+
     func fetchUserProfile(userId: String) async -> UserProfile? {
         if Self.isXcodePreview { return nil }
         do {
@@ -1539,6 +2350,26 @@ final class FirestoreManager: ObservableObject {
         }
     }
 
+    func fetchDopamineMenu(userId: String) async -> DopamineMenu? {
+        if Self.isXcodePreview { return nil }
+        do {
+            let snap = try await dopamineMenuRef(userId: userId).getDocument()
+            guard snap.exists, let data = snap.data() else { return nil }
+            return try DopamineMenu.fromFirestoreDictionary(data)
+        } catch {
+            AppLogger.error("fetchDopamineMenu failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    func saveDopamineMenu(userId: String, menu: DopamineMenu) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        try await runWrite(successLog: "Dopamine menu saved") {
+            let payload = try menu.asFirestoreDictionary()
+            try await self.dopamineMenuRef(userId: userId).setData(payload, merge: true)
+        }
+    }
+
     /// Full profile save used by `EditProfileView`.
     /// Writes:
     /// - `users/{userId}` (root: display identity)
@@ -1573,13 +2404,14 @@ final class FirestoreManager: ObservableObject {
         helpful: Bool
     ) async throws {
         _ = try requireAuthUser(matchingExpectedUid: userId)
+        AppLogger.log("[RECOMMENDATION] Saving feedback rec=\(recommendationId) helpful=\(helpful)")
         try await runWrite(successLog: "Recommendation feedback saved") {
             let ref = self.db.collection("users").document(userId).collection("recommendationFeedback").document()
             try await ref.setData([
                 "recommendationId": recommendationId,
                 "helpful": helpful,
                 "createdAt": FieldValue.serverTimestamp()
-            ])
+            ], merge: true)
         }
     }
 
@@ -1593,6 +2425,7 @@ final class FirestoreManager: ObservableObject {
         helpful: Bool
     ) async throws {
         _ = try requireAuthUser(matchingExpectedUid: userId)
+        AppLogger.log("[RECOMMENDATION] Saving detailed feedback rec=\(recommendationId) helpful=\(helpful)")
         try await runWrite(successLog: "Recommendation feedback saved") {
             let ref = self.db.collection("users").document(userId).collection("recommendationFeedback").document()
             try await ref.setData([
@@ -1602,7 +2435,83 @@ final class FirestoreManager: ObservableObject {
                 "type": type.rawValue,
                 "helpful": helpful,
                 "createdAt": FieldValue.serverTimestamp()
-            ])
+            ], merge: true)
         }
     }
+
+    /// Seeds demo users/posts only when the feed is empty.
+    func seedFirestoreIfEmpty() async {
+        await SeedDataManager.shared.seedFirestoreIfEmpty()
+    }
+
+    #if DEBUG
+    func seedTestData() async {
+        guard !isUITestMode else {
+            applyPreviewPosts(SeedData.posts)
+            return
+        }
+        guard let currentUid = Auth.auth().currentUser?.uid else { return }
+        do {
+            let existing = try await db.collection("posts").limit(to: 1).getDocuments()
+            guard existing.documents.isEmpty else { return }
+
+            let userDocs = SeedData.users.map { user -> [String: Any] in
+                [
+                    "id": user.id == "seed-user-1" ? currentUid : user.id,
+                    "name": user.name,
+                    "email": user.email,
+                    "createdAt": Timestamp(date: user.createdAt),
+                    "checkInStreak": user.checkInStreak
+                ]
+            }
+
+            let batch = db.batch()
+            for doc in userDocs {
+                guard let id = doc["id"] as? String else { continue }
+                batch.setData(doc, forDocument: db.collection("users").document(id), merge: true)
+            }
+
+            for post in SeedData.posts {
+                let ownerId = post.authorId == "seed-user-1" ? currentUid : post.authorId
+                let reactionMap = SeedData.reactions
+                    .filter { $0.postId == post.id }
+                    .reduce(into: [String: Int]()) { partial, reaction in
+                        partial[reaction.emoji, default: 0] += 1
+                    }
+                let reactionUsers = SeedData.reactions
+                    .filter { $0.postId == post.id }
+                    .reduce(into: [String: String]()) { partial, reaction in
+                        partial[reaction.userId == "seed-user-1" ? currentUid : reaction.userId] = reaction.emoji
+                    }
+
+                let payload: [String: Any] = [
+                    "authorId": ownerId,
+                    "userId": ownerId,
+                    "userName": post.user.name,
+                    "weeklyEmoji": post.emoji,
+                    "emotionalInsight": post.insight,
+                    "whoopsText": post.whoop,
+                    "weeklyGoal": post.goal,
+                    "selectedEmotions": post.selectedEmotions,
+                    "createdAt": Timestamp(date: post.createdAt ?? Date()),
+                    "likeCount": post.likeCount,
+                    "likedBy": post.likedBy,
+                    "reactions": FirestoreManager.defaultReactionCounts().merging(reactionMap, uniquingKeysWith: { _, new in new }),
+                    "userReactions": reactionUsers,
+                    "reactionUsers": reactionUsers,
+                    "visibility": post.visibility.rawValue,
+                    "commentCount": post.commentCount,
+                    "intensity": post.intensity ?? 5,
+                    "tags": post.tags
+                ]
+                batch.setData(payload, forDocument: db.collection("posts").document(post.id), merge: true)
+            }
+
+            try await batch.commit()
+            AppLogger.log("[FIRESTORE] Seed test data complete")
+        } catch {
+            AppLogger.error("Seed test data failed: \(error.localizedDescription)")
+        }
+    }
+    #endif
 }

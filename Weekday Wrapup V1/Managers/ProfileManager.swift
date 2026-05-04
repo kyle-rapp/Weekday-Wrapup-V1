@@ -25,9 +25,12 @@ final class ProfileManager: ObservableObject {
         return p
     }
 
-    func saveProfile(_ profile: UserProfile, userId: String) async throws {
+    func saveProfile(_ profile: UserProfile?, userId: String) async throws {
+        guard let profile else { return }
+        AppLogger.log("[PROFILE] Saving profile for user: \(userId)")
         try await firestore.saveUserProfile(profile, userId: userId)
         cache[userId] = profile
+        AppLogger.log("[PROFILE] Save success for user: \(userId)")
     }
 
     func invalidate(userId: String) {
