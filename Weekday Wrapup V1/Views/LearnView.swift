@@ -83,6 +83,9 @@ struct LearnView: View {
                 introSection
                 wheelSection
                 definitionSection
+                underneathSection
+                patternDiagramSection
+                friendshipJournalSection
                 wheelExplainedCards
                 sixStepGuideSection
                 boxBreathingSection
@@ -215,6 +218,24 @@ struct LearnView: View {
                 .frame(minHeight: 100, alignment: .topLeading)
             }
         }
+    }
+
+    private var underneathSection: some View {
+        Group {
+            if let key = currentEmotionKey, !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                LearnUnderneathSection(emotion: key)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: emotionRouter.learnEmotions)
+    }
+
+    private var patternDiagramSection: some View {
+        PatternDiagramView()
+    }
+
+    private var friendshipJournalSection: some View {
+        LearnFriendshipJournalCard()
     }
 
     private var emotionInsightsSection: some View {

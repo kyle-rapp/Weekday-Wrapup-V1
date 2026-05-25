@@ -14,13 +14,40 @@ struct DopamineMenuEditView: View {
     var body: some View {
         NavigationStack {
             Form {
-                editorSection("Appetizers", items: $menu.appetizers)
-                editorSection("Mains", items: $menu.mains)
-                editorSection("Sides", items: $menu.sides)
-                editorSection("Desserts", items: $menu.desserts)
-                editorSection("Specials", items: $menu.specials)
-                editorSection("Prep notes", items: $menu.prepNotes)
-                editorSection("Barriers", items: $menu.barriers)
+                Section {
+                    Text("Add things that help you feel better — from quick boosts to meaningful activities.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                }
+
+                editorSection(
+                    "Appetizers",
+                    description: "Quick boosts that give a fast mood lift without taking over your day.",
+                    items: $menu.appetizers
+                )
+                editorSection(
+                    "Entrées",
+                    description: "More immersive activities that feel energizing or meaningful.",
+                    items: $menu.mains
+                )
+                editorSection(
+                    "Sides",
+                    description: "Supportive activities that enhance other tasks.",
+                    items: $menu.sides
+                )
+                editorSection(
+                    "Desserts",
+                    description: "Comfort activities that can become overused if unbalanced.",
+                    items: $menu.desserts
+                )
+                editorSection(
+                    "Specials",
+                    description: "Intentional, higher-effort experiences worth planning for.",
+                    items: $menu.specials
+                )
+                editorSection("Prep notes", description: "", items: $menu.prepNotes)
+                editorSection("Barriers", description: "", items: $menu.barriers)
             }
             .navigationTitle("Edit menu")
             .toolbar {
@@ -42,8 +69,17 @@ struct DopamineMenuEditView: View {
         }
     }
 
-    private func editorSection(_ title: String, items: Binding<[String]>) -> some View {
-        Section(title) {
+    private func editorSection(_ title: String, description: String, items: Binding<[String]>) -> some View {
+        Section(header: VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+            if !description.isEmpty {
+                Text(description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textCase(nil)
+                    .padding(.bottom, 2)
+            }
+        }) {
             ForEach(Array(items.wrappedValue.enumerated()), id: \.offset) { idx, _ in
                 TextField(
                     "Item",

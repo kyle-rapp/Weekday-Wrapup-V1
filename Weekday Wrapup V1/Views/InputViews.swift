@@ -115,6 +115,76 @@ struct WhoopsInputView: View {
     }
 }
 
+struct GratitudeInputView: View {
+    @Binding var text: String
+    @FocusState private var isFocused: Bool
+
+    private let placeholder = "how playful my dog is"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("🌱")
+                Text("Today I'm grateful for")
+                    .modifier(HeaderStyle())
+            }
+
+            TextEditor(text: $text)
+                .font(.body)
+                .focused($isFocused)
+                .frame(minHeight: 72)
+                .modifier(InputViewStyle())
+                .tint(AppTheme.colors.primary)
+                .accessibilityIdentifier("gratitude_input_text")
+                .overlay(
+                    Group {
+                        if text.isEmpty {
+                            Text(placeholder)
+                                .modifier(PlaceholderStyle())
+                                .allowsHitTesting(false)
+                        }
+                    },
+                    alignment: .topLeading
+                )
+        }
+    }
+}
+
+struct LookForwardInputView: View {
+    @Binding var text: String
+    @FocusState private var isFocused: Bool
+
+    private let placeholder = "chatting with Elizabeth this week"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("✨")
+                Text("Soon I look forward to:")
+                    .modifier(HeaderStyle())
+            }
+
+            TextEditor(text: $text)
+                .font(.body)
+                .focused($isFocused)
+                .frame(minHeight: 72)
+                .modifier(InputViewStyle())
+                .tint(AppTheme.colors.primary)
+                .accessibilityIdentifier("look_forward_input_text")
+                .overlay(
+                    Group {
+                        if text.isEmpty {
+                            Text(placeholder)
+                                .modifier(PlaceholderStyle())
+                                .allowsHitTesting(false)
+                        }
+                    },
+                    alignment: .topLeading
+                )
+        }
+    }
+}
+
 struct WeeklyGoalInputView: View {
     @Binding var text: String
     @State private var isEditing = false

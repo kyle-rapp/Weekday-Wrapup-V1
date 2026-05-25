@@ -81,38 +81,27 @@ private struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: auth.isLoggedIn)
-        .onChange(of: auth.isLoggedIn) { _, loggedIn in
-            if loggedIn {
-                firestore.startPostsListener()
-                if shouldSeedDemoData {
-                    Task { await firestore.seedFirestoreIfEmpty() }
-                }
-                #if DEBUG
-                Task { await firestore.seedTestData() }
-                #endif
-            } else {
+        .task(id: listenerTaskKey) {
+            guard auth.isLoggedIn else {
                 firestore.teardownForLogout()
+                return
             }
-        }
-        .onChange(of: auth.currentUser?.id) { _, uid in
-            guard auth.isLoggedIn, let uid else { return }
-            firestore.startFollowingListener(userId: uid)
-            firestore.startGroupsListener(userId: uid)
-        }
-        .onAppear {
-            if auth.isLoggedIn {
-                firestore.startPostsListener()
-                if shouldSeedDemoData {
-                    Task { await firestore.seedFirestoreIfEmpty() }
-                }
-                #if DEBUG
-                Task { await firestore.seedTestData() }
-                #endif
-                if let uid = auth.currentUser?.id {
-                    firestore.startFollowingListener(userId: uid)
-                    firestore.startGroupsListener(userId: uid)
-                }
+            firestore.startPostsListener()
+            if let uid = auth.currentUser?.id {
+                firestore.startFollowingListener(userId: uid)
+                firestore.startGroupsListener(userId: uid)
             }
+            if shouldSeedDemoData {
+                await firestore.seedFirestoreIfEmpty()
+            }
+            #if DEBUG
+            await firestore.seedTestData()
+            #endif
         }
+    }
+
+    private var listenerTaskKey: String {
+        let login = auth.isLoggedIn ? "logged_in" : "logged_out"
+        return "\(login)|\(auth.currentUser?.id ?? "none")"
     }
 }

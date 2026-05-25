@@ -9,6 +9,7 @@ struct MainTabView: View {
     @EnvironmentObject private var firestore: FirestoreManager
     @StateObject private var feedViewModel = FeedViewModel()
     @StateObject private var tabRouter = TabRouter()
+    @StateObject private var calendarViewModel = CalendarViewModel()
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -41,7 +42,7 @@ struct MainTabView: View {
                 .tag(MainAppTab.learn)
 
                 NavigationStack {
-                    GrowView()
+                    GrowView(calendarViewModel: calendarViewModel)
                 }
                 .tabItem {
                     Label("Grow", systemImage: "chart.line.uptrend.xyaxis")

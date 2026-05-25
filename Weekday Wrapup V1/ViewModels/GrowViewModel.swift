@@ -23,8 +23,9 @@ final class GrowViewModel: ObservableObject {
     @Published private(set) var habitSignals: [HabitSignal] = []
     @Published private(set) var habitInsights: [HabitInsight] = []
     @Published private(set) var habitStreaks: [HabitStreak] = []
+    @Published private(set) var adaptiveProfile: UserAdaptiveProfile?
 
-    private let recommendationEngine = PersonalizedRecommendationEngine()
+    private let recommendationEngine = EmotionPersonalizationEngine()
     private var recommendationCacheSignature: String = ""
 
     func syncEntries(_ list: [CheckInData]) {
@@ -54,6 +55,11 @@ final class GrowViewModel: ObservableObject {
         invalidateRecommendationCache()
     }
 
+    func updateAdaptiveProfile(_ profile: UserAdaptiveProfile?) {
+        adaptiveProfile = profile
+        invalidateRecommendationCache()
+    }
+
     func mergeDerivedHabitSignals(userId: String) {
         let derived = HabitReinforcementEngine.deriveSignals(from: entries, userId: userId)
         let merged = Array(Set(habitSignals + derived)).sorted { $0.createdAt > $1.createdAt }
@@ -67,37 +73,55 @@ final class GrowViewModel: ObservableObject {
     /// Recomputes recommendations only when inputs change (performance).
     func refreshPersonalizedRecommendations(weather: RecommendationWeatherHint) {
         let history = filteredEntries
-        let (emotion, intensity, tags) = PersonalizedRecommendationEngine.moodContext(from: history)
-        let excluded = RecentRecommendationDedupe.excludedTitles()
-        let fb = recommendationFeedbackRows.map { ($0.title, $0.helpful) }
-        let sig = [
-            emotion,
-            "\(intensity)",
-            tags.joined(separator: ","),
-            userPreferences.map { String(describing: $0) } ?? "nil",
+        let context = EmotionContext.fromHistory(
+            history,
+            userPreferences: userPreferences,
+            weather: weather,
+            feedbackRows: recommendationFeedbackRows,
+            memory: recommendationMemory,
+            habitInsights: habitInsights,
+            adaptiveProfile: adaptiveProfile
+        )
+        let memorySig = recommendationMemory
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key):\($0.value.timesAccepted):\($0.value.timesDismissed)" }
+            .joined(separator: ",")
+        let habitSig = habitInsights
+            .sorted { $0.actionType < $1.actionType }
+            .map { "\($0.actionType):\($0.improvementScore):\($0.usageCount)" }
+            .joined(separator: ",")
+        let feedbackSig = recommendationFeedbackRows.map { "\($0.title)|\($0.helpful)" }.joined(separator: ";")
+        let prefsSig = userPreferences.map { String(describing: $0) } ?? "nil"
+        let adaptiveSig = adaptiveProfile.map { String(describing: $0) } ?? "nil"
+        let sigParts = [
+            context.emotion,
+            "\(context.intensity)",
+            context.helpfulTags.joined(separator: ","),
+            prefsSig,
             weather.rawValue,
             "\(history.count)",
             selectedEmotion ?? "_all",
-            fb.map { "\($0.0)|\($0.1)" }.joined(separator: ";"),
-            excluded.sorted().joined(separator: ","),
-            recommendationMemory.keys.sorted().joined(separator: ","),
-            habitInsights.map { "\($0.actionType):\($0.improvementScore)" }.joined(separator: ",")
-        ].joined(separator: "|")
+            feedbackSig,
+            memorySig,
+            habitSig,
+            adaptiveSig
+        ]
+        let sig = sigParts.joined(separator: "|")
 
-        guard sig != recommendationCacheSignature else { return }
+        guard sig != recommendationCacheSignature else {
+            #if DEBUG
+            print("[GROW_STABILITY] recommendations cache hit; skip recompute")
+            #endif
+            return
+        }
         recommendationCacheSignature = sig
+        #if DEBUG
+        print("[GROW_STABILITY] recompute recommendations emotion=\(context.emotion) intensity=\(context.intensity) entries=\(history.count)")
+        #endif
 
-        personalizedRecommendations = recommendationEngine.generate(
-            emotion: emotion,
-            intensity: intensity,
-            tags: tags,
-            preferences: userPreferences,
-            history: history,
-            weather: weather,
-            feedbackRows: fb,
-            excludedTitlesLowercased: excluded,
-            memory: recommendationMemory,
-            habitInsights: habitInsights
+        personalizedRecommendations = recommendationEngine.getRecommendations(
+            context: context,
+            surface: .growTab
         )
         RecentRecommendationDedupe.recordShownTitles(personalizedRecommendations.map(\.title))
     }
@@ -109,7 +133,21 @@ final class GrowViewModel: ObservableObject {
             return entries
         }
         return entries.filter { entry in
-            entry.selectedEmotions.contains { $0.caseInsensitiveCompare(raw) == .orderedSame }
+            entryContainsEmotion(entry, emotion: raw)
+        }
+    }
+
+    private func entryContainsEmotion(_ entry: CheckInData, emotion: String) -> Bool {
+        let normalizedEmotion = emotion.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedEmotion.isEmpty else { return true }
+
+        let candidates: [String] = entry.selectedEmotions.map { $0 }
+            + entry.selectedEmotionsOrdered
+            + entry.selectedEmotionsArray
+            + [entry.firstSelectedEmotionLabel]
+
+        return candidates.contains {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedEmotion
         }
     }
 

@@ -20,6 +20,12 @@ struct SocialGroup: Identifiable, Codable, Equatable {
     /// Per-member override: uid → may see past group-scoped content (set when they join).
     var memberHistoryAccess: [String: Bool]?
     var description: String?
+    /// Search keywords and support themes (e.g. ["anxiety", "burnout"]).
+    var tags: [String]
+    /// Extra alias terms used for discoverability/ranking.
+    var searchKeywords: [String]
+    /// Primary mental health category (e.g. "anxiety", "ADHD", "grief").
+    var category: String?
 
     init(
         id: String,
@@ -31,7 +37,10 @@ struct SocialGroup: Identifiable, Codable, Equatable {
         invitedContacts: [String]? = nil,
         allowHistoryAccessForNewMembers: Bool? = nil,
         memberHistoryAccess: [String: Bool]? = nil,
-        description: String? = nil
+        description: String? = nil,
+        tags: [String] = [],
+        searchKeywords: [String] = [],
+        category: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -43,6 +52,9 @@ struct SocialGroup: Identifiable, Codable, Equatable {
         self.allowHistoryAccessForNewMembers = allowHistoryAccessForNewMembers
         self.memberHistoryAccess = memberHistoryAccess
         self.description = description
+        self.tags = tags
+        self.searchKeywords = searchKeywords
+        self.category = category
     }
 }
 

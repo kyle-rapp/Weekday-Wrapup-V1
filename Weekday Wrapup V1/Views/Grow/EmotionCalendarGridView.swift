@@ -3,13 +3,10 @@ import SwiftUI
 /// FILE: Views/Grow/EmotionCalendarGridView.swift
 /// Month grid for emotions; layout-only — logic lives in `CalendarViewModel`.
 
-private enum GrowCalendarSelection {
-    static let matchedID = "growCalendarDaySelection"
-}
-
 struct EmotionCalendarGridView: View {
     @ObservedObject var calendar: CalendarViewModel
     let entries: [CheckInData]
+    let selectedEmotion: String?
     var namespace: Namespace.ID
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 7)
@@ -20,10 +17,15 @@ struct EmotionCalendarGridView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            monthPicker
-            Text(calendar.displayedMonth.formatted(date: .abbreviated, time: .omitted))
-                .font(.caption)
-                .foregroundColor(.red)
+            VStack {
+                monthPicker
+            }
+            .zIndex(100)
+            .allowsHitTesting(true)
+
+            Text("Swipe or tap arrows to explore past months")
+                .font(.caption2)
+                .foregroundStyle(AppTheme.colors.textSecondary)
 
             LazyVGrid(columns: columns, spacing: 6) {
                 ForEach(Array(calendar.weekdayHeaderSymbols.enumerated()), id: \.offset) { _, sym in
@@ -37,9 +39,7 @@ struct EmotionCalendarGridView: View {
                     calendarDayCell(cell)
                 }
             }
-        }
-        .onChange(of: calendar.displayedMonth) { _, newValue in
-            print("🧠 UI RECEIVED MONTH:", newValue)
+            .zIndex(0)
         }
     }
 
@@ -48,11 +48,19 @@ struct EmotionCalendarGridView: View {
             Button {
                 calendar.shiftMonth(by: -1)
             } label: {
-                Image(systemName: "chevron.left.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(AppTheme.colors.ocean)
+                Image(systemName: "chevron.left")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(AppTheme.colors.textPrimary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                    .background(
+                        Circle()
+                            .fill(AppTheme.colors.secondaryBackground)
+                    )
             }
             .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .zIndex(1000)
             .accessibilityIdentifier("calendar_prev_month")
 
             Spacer()
@@ -67,20 +75,30 @@ struct EmotionCalendarGridView: View {
             Button {
                 calendar.shiftMonth(by: 1)
             } label: {
-                Image(systemName: "chevron.right.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(AppTheme.colors.ocean)
+                Image(systemName: "chevron.right")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(AppTheme.colors.textPrimary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                    .background(
+                        Circle()
+                            .fill(AppTheme.colors.secondaryBackground)
+                    )
             }
             .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .zIndex(1000)
             .accessibilityIdentifier("calendar_next_month")
             .disabled(calendar.isCurrentMonth)
-            .opacity(calendar.isCurrentMonth ? 0.4 : 1.0)
         }
+        .contentShape(Rectangle())
+        .zIndex(100)
     }
 
     @ViewBuilder
     private func calendarDayCell(_ cell: CalendarViewModel.MonthCell) -> some View {
-        let dayEntry = cell.dateForDay.flatMap { calendar.lookupEntry(for: $0, entries: entries) }
+        let rawDayEntry = cell.dateForDay.flatMap { calendar.lookupEntry(for: $0, entries: entries) }
+        let dayEntry = filteredEntry(rawDayEntry, dateForDay: cell.dateForDay)
         let dateForDayOpt = cell.dateForDay
         let isSelected = calendar.isSelectedDay(dateForDayOpt, selected: calendar.selectedCalendarDate)
 
@@ -97,7 +115,7 @@ struct EmotionCalendarGridView: View {
                     if isSelected {
                         RoundedRectangle(cornerRadius: 8)
                             .fill(AppTheme.colors.pine.opacity(0.22))
-                            .matchedGeometryEffect(id: GrowCalendarSelection.matchedID, in: namespace)
+                            // Temporarily disabled to avoid any interaction-layer interference.
                             .shadow(color: AppTheme.colors.pine.opacity(0.4), radius: 8, x: 0, y: 2)
                     }
 
@@ -119,6 +137,29 @@ struct EmotionCalendarGridView: View {
                 .fill(Color.clear)
                 .aspectRatio(1, contentMode: .fit)
         }
+    }
+
+    private func filteredEntry(_ entry: CheckInData?, dateForDay: Date?) -> CheckInData? {
+        guard let entry else { return nil }
+        let normalizedSelected = selectedEmotion?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        guard !normalizedSelected.isEmpty else { return entry }
+
+        let dayEmotions = Array(Set(
+            entry.selectedEmotions.map { $0.lowercased() }
+            + entry.selectedEmotionsOrdered.map { $0.lowercased() }
+            + entry.selectedEmotionsArray.map { $0.lowercased() }
+            + [entry.firstSelectedEmotionLabel.lowercased()]
+        ))
+        let passes = dayEmotions.contains(normalizedSelected)
+
+        #if DEBUG
+        let dayLabel = dateForDay?.formatted(date: .abbreviated, time: .omitted) ?? "unknown"
+        print("[GROW_FILTER] selected='\(normalizedSelected)' day=\(dayLabel) emotions=\(dayEmotions.joined(separator: ",")) passes=\(passes)")
+        #endif
+
+        return passes ? entry : nil
     }
 
     private func accessibilityDayLabel(day: Int, entry: CheckInData?) -> String {

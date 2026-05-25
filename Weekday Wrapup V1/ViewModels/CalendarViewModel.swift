@@ -8,12 +8,14 @@ import UIKit
 @MainActor
 final class CalendarViewModel: ObservableObject {
     @Published var months: [[CalendarDay]] = []
-    @Published var displayedMonth: Date = Date()
+    @Published private(set) var displayedMonth: Date = Calendar.current.startOfMonth(for: Date())
     @Published var selectedCalendarDate: Date?
     @Published var selectedEntry: CheckInData?
 
     private let calendar = Calendar.current
     private var loadedMonthStarts: Set<Date> = []
+
+    init() {}
 
     struct MonthCell: Identifiable, Equatable {
         let id: String
@@ -37,26 +39,26 @@ final class CalendarViewModel: ObservableObject {
     }
 
     var isCurrentMonth: Bool {
-        let displayed = monthStart(for: displayedMonth)
-        let current = monthStart(for: Date())
+        let displayed = calendar.startOfMonth(for: displayedMonth)
+        let current = calendar.startOfMonth(for: Date())
         return calendar.isDate(displayed, equalTo: current, toGranularity: .month)
     }
 
     func shiftMonth(by value: Int) {
-        guard let newMonth = Calendar.current.date(byAdding: .month, value: value, to: displayedMonth) else { return }
-        displayedMonth = newMonth
-        print("📅 MONTH SHIFTED TO:", displayedMonth)
+        let currentMonth = calendar.startOfMonth(for: displayedMonth)
+        guard let newMonth = calendar.date(byAdding: .month, value: value, to: currentMonth) else { return }
+        displayedMonth = calendar.startOfMonth(for: newMonth)
     }
 
     func generateMonths(entries: [CheckInData], monthsBack: Int = 6) {
-        let today = Date()
+        let currentMonth = calendar.startOfMonth(for: Date())
         loadedMonthStarts.removeAll()
         let sorted = entries.sorted { $0.date > $1.date }
         let chunks: [[CalendarDay]] = (0..<monthsBack).compactMap { offset in
-            guard let monthDate = calendar.date(byAdding: .month, value: -offset, to: today) else { return nil }
-            let monthStart = monthStart(for: monthDate)
+            guard let monthDate = calendar.date(byAdding: .month, value: -offset, to: currentMonth) else { return nil }
+            let monthStart = calendar.startOfMonth(for: monthDate)
             loadedMonthStarts.insert(monthStart)
-            return generateDays(for: monthDate, entries: sorted)
+            return generateDays(for: monthStart, entries: sorted)
         }
         months = chunks
     }
@@ -68,19 +70,21 @@ final class CalendarViewModel: ObservableObject {
               let previousMonth = calendar.date(byAdding: .month, value: -1, to: lastDate)
         else { return }
 
-        let previousMonthStart = monthStart(for: previousMonth)
+        let previousMonthStart = calendar.startOfMonth(for: previousMonth)
         guard loadedMonthStarts.contains(previousMonthStart) == false else { return }
 
         let sorted = entries.sorted { $0.date > $1.date }
-        let newMonth = generateDays(for: previousMonth, entries: sorted)
+        let newMonth = generateDays(for: previousMonthStart, entries: sorted)
         loadedMonthStarts.insert(previousMonthStart)
         months.append(newMonth)
     }
 
     private func generateDays(for month: Date, entries: [CheckInData]) -> [CalendarDay] {
-        guard let range = calendar.range(of: .day, in: .month, for: month),
-              let firstOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: month))
+        let normalizedMonth = calendar.startOfMonth(for: month)
+        guard let range = calendar.range(of: .day, in: .month, for: normalizedMonth),
+              let firstOfMonthRaw = calendar.date(from: calendar.dateComponents([.year, .month], from: normalizedMonth))
         else { return [] }
+        let firstOfMonth = calendar.startOfMonth(for: firstOfMonthRaw)
 
         let firstWeekday = calendar.component(.weekday, from: firstOfMonth) - 1
         var days: [CalendarDay] = []
@@ -92,20 +96,22 @@ final class CalendarViewModel: ObservableObject {
 
         for day in range {
             guard let date = calendar.date(byAdding: .day, value: day - 1, to: firstOfMonth) else { continue }
-            let entry = entries.first { calendar.isDate($0.date, inSameDayAs: date) }
-            days.append(CalendarDay(date: date, entry: entry))
+            let normalizedDate = calendar.startOfDay(for: date)
+            let entry = entries.first {
+                calendar.isDate(calendar.startOfDay(for: $0.date), inSameDayAs: normalizedDate)
+            }
+            days.append(CalendarDay(date: normalizedDate, entry: entry))
         }
 
         return days
     }
 
     func monthCells(for month: Date) -> [MonthCell] {
-        let comps = calendar.dateComponents([.year, .month], from: month)
-        let y = comps.year ?? 0
-        let m = comps.month ?? 0
-        guard let monthStart = calendar.date(from: comps),
-              let range = calendar.range(of: .day, in: .month, for: monthStart)
-        else { return [] }
+        let monthStart = calendar.startOfMonth(for: month)
+
+        guard let range = calendar.range(of: .day, in: .month, for: monthStart) else {
+            return []
+        }
 
         let weekdayOfFirst = calendar.component(.weekday, from: monthStart)
         let firstWeekdayIndex = weekdayOfFirst - calendar.firstWeekday
@@ -114,20 +120,32 @@ final class CalendarViewModel: ObservableObject {
         var cells: [MonthCell] = []
 
         for i in 0..<pad {
-            cells.append(MonthCell(id: "pad-\(y)-\(m)-\(i)", dayNumber: nil, dateForDay: nil))
+            cells.append(MonthCell(
+                id: "pad-\(monthStart)-\(i)",
+                dayNumber: nil,
+                dateForDay: nil
+            ))
         }
 
         for day in range {
             guard let date = calendar.date(byAdding: .day, value: day - 1, to: monthStart) else { continue }
-            cells.append(MonthCell(id: "day-\(y)-\(m)-\(day)", dayNumber: day, dateForDay: date))
+            let normalized = calendar.startOfDay(for: date)
+            cells.append(MonthCell(
+                id: "day-\(normalized)",
+                dayNumber: day,
+                dateForDay: normalized
+            ))
         }
 
         return cells
     }
 
     func lookupEntry(for date: Date, entries: [CheckInData]) -> CheckInData? {
-        let sameDay = entries.filter { calendar.isDate($0.date, inSameDayAs: date) }
-        return sameDay.max(by: { $0.date < $1.date })
+        let normalized = calendar.startOfDay(for: date)
+
+        return entries.first {
+            calendar.isDate(calendar.startOfDay(for: $0.date), inSameDayAs: normalized)
+        }
     }
 
     func isSelectedDay(_ date: Date?, selected: Date?) -> Bool {
@@ -136,7 +154,7 @@ final class CalendarViewModel: ObservableObject {
     }
 
     func selectDay(date: Date, entry: CheckInData?) {
-        selectedCalendarDate = date
+        selectedCalendarDate = calendar.startOfDay(for: date)
         selectedEntry = entry
     }
 
@@ -145,8 +163,11 @@ final class CalendarViewModel: ObservableObject {
         selectedEntry = nil
     }
 
-    private func monthStart(for date: Date) -> Date {
-        let comps = calendar.dateComponents([.year, .month], from: date)
-        return calendar.date(from: comps) ?? date
+}
+
+extension Calendar {
+    func startOfMonth(for date: Date) -> Date {
+        let comps = dateComponents([.year, .month], from: date)
+        return startOfDay(for: self.date(from: comps) ?? date)
     }
 }

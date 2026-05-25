@@ -53,8 +53,8 @@ struct DopamineMenuOnboardingView: View {
         switch step {
         case 0:
             categoryStep(
-                title: "Quick Boost",
-                description: "Quick boosts that give you energy without pulling you in.",
+                title: "Appetizers",
+                description: "Short activities that give a fast mood lift without taking over your day.",
                 examples: ["One favorite song", "1 minute movement", "Quick stretch", "Tea or coffee", "Hug a pet"],
                 prompt: "What are 3 quick things that usually make you feel a little better?",
                 items: $menu.appetizers,
@@ -62,8 +62,8 @@ struct DopamineMenuOnboardingView: View {
             )
         case 1:
             categoryStep(
-                title: "Deep Focus",
-                description: "Activities that fully engage you and leave you feeling good after.",
+                title: "Entrées",
+                description: "More immersive activities that feel energizing or meaningful.",
                 examples: ["Walk", "Journaling", "Cooking", "Creative hobby", "Exercise"],
                 prompt: "What makes you feel alive or fulfilled?",
                 items: $menu.mains,
@@ -71,8 +71,8 @@ struct DopamineMenuOnboardingView: View {
             )
         case 2:
             categoryStep(
-                title: "While Doing Something Else",
-                description: "Things that make boring tasks easier or more enjoyable.",
+                title: "Sides",
+                description: "Supportive activities that enhance other tasks.",
                 examples: ["Playlist while cleaning", "Podcast", "Timer challenge", "Body doubling"],
                 prompt: "What helps you get through tasks you normally avoid?",
                 items: $menu.sides,
@@ -80,8 +80,8 @@ struct DopamineMenuOnboardingView: View {
             )
         case 3:
             categoryStep(
-                title: "Easy to Overdo",
-                description: "Easy dopamine - good in moderation, but easy to overdo.",
+                title: "Desserts",
+                description: "Comfort activities that can become overused if unbalanced.",
                 examples: ["Social media scroll", "TV", "Games"],
                 prompt: "What do you tend to overdo when you're avoiding things?",
                 items: $menu.desserts,
@@ -89,8 +89,8 @@ struct DopamineMenuOnboardingView: View {
             )
         case 4:
             categoryStep(
-                title: "Plan Ahead",
-                description: "Rare, meaningful experiences that take planning.",
+                title: "Specials",
+                description: "Intentional, higher-effort experiences worth planning for.",
                 examples: ["Concert", "Trip", "Nice dinner", "Event with friends"],
                 prompt: "What are things you look forward to?",
                 items: $menu.specials,
@@ -133,11 +133,11 @@ struct DopamineMenuOnboardingView: View {
             Text("Trim each category to 3-6 realistic options.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            compactList(title: "Quick Boost", items: $menu.appetizers)
-            compactList(title: "Deep Focus", items: $menu.mains)
-            compactList(title: "While Doing Something Else", items: $menu.sides)
-            compactList(title: "Easy to Overdo", items: $menu.desserts)
-            compactList(title: "Plan Ahead", items: $menu.specials)
+            compactList(title: "Appetizers", items: $menu.appetizers)
+            compactList(title: "Entrées", items: $menu.mains)
+            compactList(title: "Sides", items: $menu.sides)
+            compactList(title: "Desserts", items: $menu.desserts)
+            compactList(title: "Specials", items: $menu.specials)
         }
     }
 

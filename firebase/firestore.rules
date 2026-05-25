@@ -72,8 +72,7 @@ service cloud.firestore {
     }
 
     match /groups/{groupId} {
-      allow read: if signedIn()
-        && request.auth.uid in resource.data.memberIds;
+      allow read: if signedIn();
       allow create: if signedIn()
         && request.resource.data.ownerId == request.auth.uid
         && request.resource.data.createdBy == request.auth.uid;
@@ -87,6 +86,11 @@ service cloud.firestore {
         );
       allow delete: if signedIn()
         && request.auth.uid == resource.data.ownerId;
+    }
+
+    match /default_groups/{groupId} {
+      allow read: if signedIn();
+      allow create, update, delete: if signedIn();
     }
 
     match /dopamineMenus/{userId} {
@@ -113,6 +117,30 @@ service cloud.firestore {
       match /recommendationFeedback/{docId} {
         allow read: if signedIn() && request.auth.uid == userId;
         allow create: if signedIn() && request.auth.uid == userId;
+      }
+
+      match /recommendationMemory/{docId} {
+        allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+      }
+
+      match /habitSignals/{docId} {
+        allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+      }
+
+      match /insights/{docId} {
+        allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+
+        match /{subCollection}/{subDocId} {
+          allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+        }
+      }
+
+      match /adaptiveProfile/{docId} {
+        allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+      }
+
+      match /eventStream/{docId} {
+        allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
       }
 
       match /support/{docId} {

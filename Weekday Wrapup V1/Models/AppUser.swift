@@ -14,6 +14,17 @@ struct AppUser: Identifiable, Equatable {
     var checkInStreak: Int
     /// Last calendar day a wrapup was posted (server-updated when a feed post succeeds).
     var lastCheckInDate: Date?
+    /// Optional onboarding fields sourced from Firestore profile.
+    var zodiacSign: String?
+    var profileImageURL: String?
+    /// Fallback for local image onboarding state when URL is unavailable.
+    var hasProfileImage: Bool
+    var isProfileComplete: Bool {
+        let hasName = !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasZodiac = !(zodiacSign ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasImage = !((profileImageURL ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) || hasProfileImage
+        return hasName && hasZodiac && hasImage
+    }
 
     init(
         id: String,
@@ -24,7 +35,10 @@ struct AppUser: Identifiable, Equatable {
         followerCount: Int = 0,
         followingCount: Int = 0,
         checkInStreak: Int = 0,
-        lastCheckInDate: Date? = nil
+        lastCheckInDate: Date? = nil,
+        zodiacSign: String? = nil,
+        profileImageURL: String? = nil,
+        hasProfileImage: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -35,5 +49,8 @@ struct AppUser: Identifiable, Equatable {
         self.followingCount = followingCount
         self.checkInStreak = checkInStreak
         self.lastCheckInDate = lastCheckInDate
+        self.zodiacSign = zodiacSign
+        self.profileImageURL = profileImageURL
+        self.hasProfileImage = hasProfileImage
     }
 }

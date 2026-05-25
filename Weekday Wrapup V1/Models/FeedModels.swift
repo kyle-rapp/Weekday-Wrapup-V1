@@ -35,6 +35,10 @@ struct FeedPost: Identifiable, Equatable, Hashable {
     var insight: String
     var whoop: String
     var goal: String
+    /// Gratitude captured during check-in (newer posts).
+    var gratitudeText: String
+    /// Anticipation / hope prompt (newer posts).
+    var lookForwardTo: String
     var title: String?
     var imageURL: String?
     /// Calendar week number stored at post time (fallback derived from `createdAt` for older posts).
@@ -66,6 +70,12 @@ struct FeedPost: Identifiable, Equatable, Hashable {
     var softSupportCounts: [String: Int]
     /// `userId` → reaction type raw values this user has active on the post.
     var softSupportByUser: [String: [String]]
+    /// Only the post author sees reaction counts; others can still react silently.
+    var hideReactions: Bool
+    /// Comment section hidden from all viewers.
+    var hideComments: Bool
+    /// Convenience semantic mirror for UI checks.
+    var commentsEnabled: Bool { !hideComments }
 
     /// First saved emotion label (Firestore array order) for reactions and calendar tinting.
     var primaryEmotion: String {
@@ -97,6 +107,8 @@ struct FeedPost: Identifiable, Equatable, Hashable {
         insight: String,
         whoop: String,
         goal: String,
+        gratitudeText: String = "",
+        lookForwardTo: String = "",
         title: String? = nil,
         imageURL: String? = nil,
         wrapupWeekNumber: Int = Calendar.current.component(.weekOfYear, from: Date()),
@@ -116,7 +128,9 @@ struct FeedPost: Identifiable, Equatable, Hashable {
         sharedGroupIds: [String] = [],
         createdAt: Date? = Date(),
         softSupportCounts: [String: Int]? = nil,
-        softSupportByUser: [String: [String]]? = nil
+        softSupportByUser: [String: [String]]? = nil,
+        hideReactions: Bool = false,
+        hideComments: Bool = false
     ) {
         self.id = id
         self.authorId = authorId
@@ -125,6 +139,8 @@ struct FeedPost: Identifiable, Equatable, Hashable {
         self.insight = insight
         self.whoop = whoop
         self.goal = goal
+        self.gratitudeText = gratitudeText
+        self.lookForwardTo = lookForwardTo
         self.title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.imageURL = imageURL?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.wrapupWeekNumber = wrapupWeekNumber
@@ -149,6 +165,8 @@ struct FeedPost: Identifiable, Equatable, Hashable {
         }
         self.softSupportCounts = counts
         self.softSupportByUser = softSupportByUser ?? [:]
+        self.hideReactions = hideReactions
+        self.hideComments = hideComments
     }
 }
 
@@ -176,6 +194,9 @@ extension FeedPost {
         let insight = data["emotionalInsight"] as? String ?? ""
         let whoop = data["whoopsText"] as? String ?? ""
         let goal = data["weeklyGoal"] as? String ?? ""
+        let gratitudeText = data["gratitudeText"] as? String ?? ""
+        let lookForwardRaw = data["lookForwardTo"] as? String ?? ""
+        let lookForwardTo = lookForwardRaw.isEmpty ? goal : lookForwardRaw
         let titleRaw = data["title"] as? String
         let title = titleRaw?.trimmingCharacters(in: .whitespacesAndNewlines)
         let imageURLRaw = data["imageURL"] as? String ?? ""
@@ -217,6 +238,8 @@ extension FeedPost {
         self.insight = insight
         self.whoop = whoop
         self.goal = goal
+        self.gratitudeText = gratitudeText
+        self.lookForwardTo = lookForwardTo
         self.title = (title?.isEmpty == false) ? title : nil
         self.imageURL = imageURL.isEmpty ? nil : imageURL
         self.wrapupWeekNumber = resolvedWeek
@@ -265,6 +288,8 @@ extension FeedPost {
             }
         }
         self.softSupportByUser = byUser
+        self.hideReactions = data["hideReactions"] as? Bool ?? false
+        self.hideComments = data["hideComments"] as? Bool ?? false
     }
 
     func softSupportCount(_ kind: SoftSupportReactionKind) -> Int {

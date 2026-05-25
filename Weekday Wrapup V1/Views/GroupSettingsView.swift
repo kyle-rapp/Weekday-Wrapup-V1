@@ -19,6 +19,8 @@ struct GroupSettingsView: View {
     @State private var isSaving = false
     @State private var errorText: String?
     @State private var memberIdPendingPastAccess: String?
+    @State private var adminVotes: [String: Int] = [:]
+    @State private var votedForId: String?
 
     init(group: SocialGroup) {
         self.group = group
@@ -126,6 +128,14 @@ struct GroupSettingsView: View {
                 }
             }
 
+            Section {
+                adminVotingSection
+            } header: {
+                Text("Admin Voting")
+            } footer: {
+                Text("Members can vote for a group admin. Highest votes earns admin privileges.")
+            }
+
             if isOwner {
                 Section {
                     Button {
@@ -140,6 +150,7 @@ struct GroupSettingsView: View {
             }
         }
         .navigationTitle("Group settings")
+        .task { await loadAdminVotes() }
         .navigationBarTitleDisplayMode(.inline)
         .alert("Couldn’t save", isPresented: Binding(
             get: { errorText != nil },
@@ -174,6 +185,69 @@ struct GroupSettingsView: View {
             }
         } message: {
             Text("This applies to this person only. You can still change the group default below.")
+        }
+    }
+
+    @ViewBuilder
+    private var adminVotingSection: some View {
+        let candidates = memberIds.filter { $0 != ownerId }
+        if candidates.isEmpty {
+            Text("No other members to vote for yet.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(candidates, id: \.self) { cid in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(shortUserLabel(cid))
+                            .font(.subheadline)
+                        let count = adminVotes[cid] ?? 0
+                        Text("\(count) vote\(count == 1 ? "" : "s")")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if votedForId == cid {
+                        Label("Voted", systemImage: "checkmark.circle.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.green)
+                    } else {
+                        Button("Vote") {
+                            Task { await castVote(for: cid) }
+                        }
+                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.bordered)
+                        .disabled(votedForId != nil)
+                    }
+                }
+            }
+        }
+    }
+
+    private func loadAdminVotes() async {
+        let votes = await firestore.fetchGroupAdminVotes(groupId: group.id)
+        let me = auth.currentUser?.id ?? ""
+        await MainActor.run {
+            adminVotes = votes
+            // Restore voted state from local key (session-level memory)
+            let key = "voted_admin_\(group.id)"
+            votedForId = UserDefaults.standard.string(forKey: key)
+        }
+    }
+
+    private func castVote(for candidateId: String) async {
+        guard let voterId = auth.currentUser?.id else { return }
+        do {
+            try await firestore.voteForGroupAdmin(groupId: group.id, candidateId: candidateId, voterId: voterId)
+            let key = "voted_admin_\(group.id)"
+            UserDefaults.standard.set(candidateId, forKey: key)
+            await MainActor.run {
+                votedForId = candidateId
+                adminVotes[candidateId, default: 0] += 1
+            }
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        } catch {
+            await MainActor.run { errorText = error.localizedDescription }
         }
     }
 

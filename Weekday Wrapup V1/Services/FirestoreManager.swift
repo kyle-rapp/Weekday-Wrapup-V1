@@ -18,6 +18,9 @@ final class FirestoreManager: ObservableObject {
     /// Group ids the current user belongs to (for `PostVisibility.groups` feed filtering).
     @Published private(set) var joinedGroupIds: Set<String> = []
     @Published private(set) var myGroups: [SocialGroup] = []
+    @Published private(set) var discoverableGroups: [SocialGroup] = []
+    @Published private(set) var isDiscoverableGroupsLoading: Bool = false
+    @Published private(set) var discoverableGroupsVersion: Int = 0
     /// User-visible Firestore / auth errors (optional alert in views).
     @Published var errorMessage: String?
     /// Latest context-aware suggestion from emotional pattern detection.
@@ -31,6 +34,11 @@ final class FirestoreManager: ObservableObject {
     private var commentsListener: ListenerRegistration?
     private var followingListener: ListenerRegistration?
     private var groupsListener: ListenerRegistration?
+    private var activeCommentsPostId: String?
+    private var activeFollowingUserId: String?
+    private var activeGroupsUserId: String?
+    private var lastDiscoverableLoadUserId: String?
+    private var lastPublishedErrorMessage: String?
     /// Personalized learning cache for the signed-in viewer.
     private var profileCacheUserId: String?
     private var cachedHelpfulProfile: [String: Int] = [:]
@@ -89,17 +97,37 @@ final class FirestoreManager: ObservableObject {
             AppLogger.log("[FIRESTORE] Write success: \(successLog)")
             return value
         } catch {
-            let msg = error.localizedDescription
-            AppLogger.error("[FIRESTORE] Write failed: \(msg)")
-            errorMessage = msg
+            let technicalMessage = error.localizedDescription
+            AppLogger.error("[FIRESTORE] Write failed: \(technicalMessage)")
+            publishUserFacingError(from: error)
             throw error
         }
     }
 
     private func reportListenerError(_ context: String, error: Error) {
-        let msg = error.localizedDescription
-        AppLogger.error("\(context): \(msg)")
-        errorMessage = msg
+        AppLogger.error("\(context): \(error.localizedDescription)")
+        publishUserFacingError(from: error)
+    }
+
+    private func publishUserFacingError(from error: Error) {
+        let message = userFacingErrorMessage(from: error)
+        guard message != lastPublishedErrorMessage else { return }
+        lastPublishedErrorMessage = message
+        errorMessage = message
+    }
+
+    private func userFacingErrorMessage(from error: Error) -> String {
+        let technical = error.localizedDescription.lowercased()
+        if technical.contains("insufficient permissions") || technical.contains("permission") {
+            return "We couldn't load this section right now."
+        }
+        if technical.contains("network") || technical.contains("offline") || technical.contains("timed out") {
+            return "You're offline or the connection is slow. Please try again in a moment."
+        }
+        if technical.contains("unauth") || technical.contains("sign in") {
+            return "Please sign in again to continue."
+        }
+        return "Something went wrong. Please try again."
     }
 
     // MARK: - Session teardown
@@ -112,11 +140,16 @@ final class FirestoreManager: ObservableObject {
         followingIds = []
         joinedGroupIds = []
         myGroups = []
+        discoverableGroups = []
         profileCacheUserId = nil
         cachedHelpfulProfile = [:]
         cachedSimilarUserIds = []
         activeNudge = nil
+        isDiscoverableGroupsLoading = false
+        discoverableGroupsVersion = 0
+        lastDiscoverableLoadUserId = nil
         errorMessage = nil
+        lastPublishedErrorMessage = nil
     }
 
     // MARK: - Posts listener
@@ -128,7 +161,7 @@ final class FirestoreManager: ObservableObject {
             }
             return
         }
-        stopPostsListener()
+        guard postsListener == nil else { return }
         postsListener = db.collection("posts")
             .order(by: "createdAt", descending: true)
             .limit(to: 60)
@@ -340,12 +373,17 @@ final class FirestoreManager: ObservableObject {
         if isUITestMode {
             myGroups = []
             joinedGroupIds = []
+            discoverableGroups = []
             return
         }
         #if DEBUG
         if Self.isXcodePreview { return }
         #endif
+        if activeGroupsUserId == userId, groupsListener != nil {
+            return
+        }
         stopGroupsListener()
+        activeGroupsUserId = userId
         groupsListener = db.collection("groups")
             .whereField("memberIds", arrayContains: userId)
             .addSnapshotListener { [weak self] snapshot, error in
@@ -357,30 +395,8 @@ final class FirestoreManager: ObservableObject {
                     return
                 }
                 guard let documents = snapshot?.documents else { return }
-                    let groups: [SocialGroup] = documents.compactMap { doc in
-                    let data = doc.data()
-                    guard let name = data["name"] as? String,
-                          let memberIds = data["memberIds"] as? [String] else { return nil }
-                    let owner = (data["ownerId"] as? String) ?? (data["createdBy"] as? String) ?? ""
-                    guard !owner.isEmpty else { return nil }
-                    let invited = data["invitedContacts"] as? [String]
-                    let allowHistory = data["allowHistoryAccessForNewMembers"] as? Bool
-                    let desc = data["description"] as? String
-                    let adminIds = data["adminIds"] as? [String]
-                    let createdAt = (data["createdAt"] as? Timestamp)?.dateValue()
-                    let memberHistoryAccess = data["memberHistoryAccess"] as? [String: Bool]
-                    return SocialGroup(
-                        id: doc.documentID,
-                        name: name,
-                        memberIds: memberIds,
-                        createdBy: owner,
-                        adminIds: adminIds ?? [owner],
-                        createdAt: createdAt,
-                        invitedContacts: invited,
-                        allowHistoryAccessForNewMembers: allowHistory,
-                        memberHistoryAccess: memberHistoryAccess,
-                        description: desc
-                    )
+                let groups: [SocialGroup] = documents.compactMap { doc in
+                    self.socialGroup(from: doc)
                 }
                 Task { @MainActor in
                     self.myGroups = groups.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -393,14 +409,183 @@ final class FirestoreManager: ObservableObject {
     func stopGroupsListener() {
         groupsListener?.remove()
         groupsListener = nil
+        activeGroupsUserId = nil
         joinedGroupIds = []
         myGroups = []
+        discoverableGroups = []
     }
+
+    func loadDiscoverableGroups(forceRefresh: Bool = false, limit: Int = 240) async {
+        if isUITestMode {
+            await MainActor.run {
+                discoverableGroups = []
+                isDiscoverableGroupsLoading = false
+            }
+            return
+        }
+        #if DEBUG
+        if Self.isXcodePreview { return }
+        #endif
+        let currentUid = Auth.auth().currentUser?.uid ?? "_none"
+        if !forceRefresh,
+           !discoverableGroups.isEmpty,
+           lastDiscoverableLoadUserId == currentUid {
+            return
+        }
+        if isDiscoverableGroupsLoading {
+            return
+        }
+        isDiscoverableGroupsLoading = true
+        defer { isDiscoverableGroupsLoading = false }
+
+        // Canonical pipeline: ensure defaults exist before merge/fetch.
+        await seedDefaultGroupsIfNeeded()
+
+        do {
+            let liveGroups: [SocialGroup]
+            let liveDocs: [QueryDocumentSnapshot]
+            do {
+                let snap = try await db.collection("groups")
+                    .order(by: "createdAt", descending: true)
+                    .limit(to: limit)
+                    .getDocuments()
+                liveDocs = snap.documents
+                liveGroups = snap.documents.compactMap { socialGroup(from: $0) }
+            } catch {
+                AppLogger.error("loadDiscoverableGroups groups query failed: \(error.localizedDescription)")
+                liveDocs = []
+                liveGroups = []
+            }
+
+            let defaultGroups: [SocialGroup]
+            let defaultDocs: [QueryDocumentSnapshot]
+            do {
+                let defaultsSnap = try await db.collection("default_groups")
+                    .getDocuments()
+                defaultDocs = defaultsSnap.documents
+                defaultGroups = defaultsSnap.documents.compactMap { defaultGroupStub(from: $0) }
+            } catch {
+                AppLogger.error("loadDiscoverableGroups default_groups query failed: \(error.localizedDescription)")
+                defaultDocs = []
+                defaultGroups = []
+            }
+            let localDefaultGroups: [SocialGroup] = DefaultGroups.all.map { name in
+                let description = "Peer support for \(name.lowercased()) with emotionally safe, low-pressure check-ins."
+                return SocialGroup(
+                    id: "default_local_\(name.lowercased().replacingOccurrences(of: " ", with: "_"))",
+                    name: name,
+                    memberIds: [],
+                    createdBy: "seed-default-group",
+                    adminIds: ["seed-default-group"],
+                    createdAt: nil,
+                    invitedContacts: nil,
+                    allowHistoryAccessForNewMembers: nil,
+                    memberHistoryAccess: nil,
+                    description: description,
+                    tags: DefaultGroups.tagsForGroup(name: name, description: description),
+                    searchKeywords: DefaultGroups.searchKeywordsForGroup(name: name, description: description),
+                    category: DefaultGroups.categoryForGroup(named: name)
+                )
+            }
+            var mergedByName: [String: SocialGroup] = [:]
+            for group in liveGroups {
+                mergedByName[group.name.lowercased()] = group
+            }
+            for stub in defaultGroups {
+                let key = stub.name.lowercased()
+                if var existing = mergedByName[key] {
+                    if existing.description?.isEmpty ?? true { existing.description = stub.description }
+                    if existing.category?.isEmpty ?? true { existing.category = stub.category }
+                    if existing.tags.isEmpty { existing.tags = stub.tags }
+                    if existing.searchKeywords.isEmpty { existing.searchKeywords = stub.searchKeywords }
+                    mergedByName[key] = existing
+                } else {
+                    mergedByName[key] = stub
+                }
+            }
+            for local in localDefaultGroups {
+                let key = local.name.lowercased()
+                if mergedByName[key] == nil {
+                    mergedByName[key] = local
+                }
+            }
+            let groups = Array(mergedByName.values)
+            #if DEBUG
+            let staticNames = DefaultGroups.all
+            let staticFirst = staticNames.prefix(50).joined(separator: " | ")
+            print("[GROUP_SEARCH] DEFAULT_GROUP_STATIC_COUNT=\(staticNames.count)")
+            print("[GROUP_SEARCH] DEFAULT_GROUP_STATIC_NAMES=\(staticFirst)")
+            print("[GROUP_SEARCH] DEFAULT_GROUPS_COLLECTION_COUNT=\(defaultGroups.count)")
+            print("[GROUP_SEARCH] DEFAULT_GROUPS_COLLECTION_NAMES=\(defaultGroups.map(\.name).sorted().prefix(50).joined(separator: " | "))")
+            print("[GROUP_SEARCH] DEFAULT_GROUPS_LOCAL_FALLBACK_COUNT=\(localDefaultGroups.count)")
+            print("[GROUP_SEARCH] LIVE_GROUPS_COLLECTION_COUNT=\(liveGroups.count)")
+            print("[GROUP_SEARCH] MERGED_DISCOVERABLE_GROUPS_COUNT=\(groups.count)")
+            print("[GROUP_SEARCH] MERGED_DISCOVERABLE_GROUPS_NAMES=\(groups.map(\.name).sorted().prefix(50).joined(separator: " | "))")
+            print("[GROUP_SEARCH] collections=groups+default_groups live=\(liveGroups.count) defaults=\(defaultGroups.count) merged=\(groups.count)")
+            let firstTwenty = groups
+                .map(\.name)
+                .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+                .prefix(20)
+                .joined(separator: " | ")
+            print("[GROUP_SEARCH] merged_first_20=\(firstTwenty)")
+            let mergedNames = groups.map { $0.name.lowercased() }
+            let hasBurnout = mergedNames.contains { $0.contains("burnout") }
+            let hasPTSD = mergedNames.contains { $0 == "ptsd" || $0.contains("post traumatic stress") || $0.contains("post-traumatic stress") }
+            let staticLower = staticNames.map { $0.lowercased() }
+            let defaultLower = defaultGroups.map { $0.name.lowercased() }
+            print("[GROUP_SEARCH] HAS_STATIC_BURNOUT=\(staticLower.contains { $0.contains("burnout") })")
+            print("[GROUP_SEARCH] HAS_STATIC_PTSD=\(staticLower.contains { $0 == "ptsd" || $0.contains("post traumatic stress") || $0.contains("post-traumatic stress") })")
+            print("[GROUP_SEARCH] HAS_FIRESTORE_BURNOUT=\(defaultLower.contains { $0.contains("burnout") })")
+            print("[GROUP_SEARCH] HAS_FIRESTORE_PTSD=\(defaultLower.contains { $0 == "ptsd" || $0.contains("post traumatic stress") || $0.contains("post-traumatic stress") })")
+            print("[GROUP_SEARCH] HAS_MERGED_BURNOUT=\(hasBurnout)")
+            print("[GROUP_SEARCH] HAS_MERGED_PTSD=\(hasPTSD)")
+            print("[GROUP_SEARCH] merged_has_burnout=\(hasBurnout) merged_has_ptsd=\(hasPTSD)")
+            print("[GROUP_SEARCH] validation burnout_present=\(hasBurnout) ptsd_present=\(hasPTSD) groups_count=\(liveGroups.count) default_groups_count=\(defaultGroups.count) merged_count=\(groups.count)")
+            debugLogRelevantGroupDocuments(liveDocs, source: "groups")
+            debugLogRelevantGroupDocuments(defaultDocs, source: "default_groups")
+            #endif
+            await MainActor.run {
+                self.discoverableGroups = groups.sorted { lhs, rhs in
+                    if lhs.memberIds.count != rhs.memberIds.count {
+                        return lhs.memberIds.count > rhs.memberIds.count
+                    }
+                    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                }
+                self.lastDiscoverableLoadUserId = currentUid
+                self.discoverableGroupsVersion += 1
+            }
+        } catch {
+            AppLogger.error("loadDiscoverableGroups failed: \(error.localizedDescription)")
+            await MainActor.run {
+                self.discoverableGroups = []
+                self.discoverableGroupsVersion += 1
+            }
+        }
+    }
+
+    #if DEBUG
+    private func debugLogRelevantGroupDocuments(_ docs: [QueryDocumentSnapshot], source: String) {
+        let keywords = ["burnout", "ptsd", "post traumatic stress", "post-traumatic stress", "trauma"]
+        for doc in docs {
+            let data = doc.data()
+            let name = (data["name"] as? String) ?? ""
+            let description = (data["description"] as? String) ?? ""
+            let category = (data["category"] as? String) ?? ""
+            let tags = (data["tags"] as? [String]) ?? []
+            let searchKeywords = (data["searchKeywords"] as? [String]) ?? []
+            let blob = "\(name) \(description) \(category) \(tags.joined(separator: " ")) \(searchKeywords.joined(separator: " "))".lowercased()
+            guard keywords.contains(where: { blob.contains($0) }) else { continue }
+            print("[GROUP_SEARCH][MODEL] source=\(source) id=\(doc.documentID) name='\(name)' category='\(category)' description='\(description)' tags=\(tags) searchKeywords=\(searchKeywords)")
+        }
+    }
+    #endif
 
     /// Creates a `groups` document. Writes `ownerId` and legacy `createdBy` (same uid) for compatibility.
     func createGroup(
         name: String,
         description: String? = nil,
+        tags: [String] = [],
+        category: String? = nil,
         memberIds: [String],
         ownerId: String,
         invitedContacts: [String]? = nil,
@@ -414,6 +599,18 @@ final class FirestoreManager: ObservableObject {
         var members = Set(memberIds)
         members.insert(ownerId)
         let trimmedDescription = description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let resolvedCategory = (category?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            ? category!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : DefaultGroups.categoryForGroup(named: trimmed)
+        let resolvedTags = {
+            let explicit = tags
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
+            let inferred = DefaultGroups.tagsForGroup(name: trimmed, description: trimmedDescription)
+            var seen = Set<String>()
+            return (explicit + inferred).filter { seen.insert($0).inserted }
+        }()
+        let resolvedSearchKeywords = DefaultGroups.searchKeywordsForGroup(name: trimmed, description: trimmedDescription)
         let trimmedInvites = (invitedContacts ?? [])
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -430,6 +627,9 @@ final class FirestoreManager: ObservableObject {
             if !trimmedDescription.isEmpty {
                 payload["description"] = trimmedDescription
             }
+            payload["category"] = resolvedCategory
+            payload["tags"] = resolvedTags
+            payload["searchKeywords"] = resolvedSearchKeywords
             if !trimmedInvites.isEmpty {
                 payload["invitedContacts"] = trimmedInvites
             }
@@ -528,6 +728,40 @@ final class FirestoreManager: ObservableObject {
         }
     }
 
+    /// Lets a user join a suggested/default community by name.
+    /// Reuses an existing group when found, otherwise creates one.
+    func joinSuggestedGroup(named groupName: String, userId: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        let trimmedName = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+
+        let existing = try await db.collection("groups")
+            .whereField("name", isEqualTo: trimmedName)
+            .limit(to: 1)
+            .getDocuments()
+
+        if let doc = existing.documents.first {
+            let description = (doc.data()["description"] as? String) ?? "Low-pressure support community"
+            try await doc.reference.updateData([
+                "memberIds": FieldValue.arrayUnion([userId]),
+                "category": DefaultGroups.categoryForGroup(named: trimmedName),
+                "tags": DefaultGroups.tagsForGroup(name: trimmedName, description: description),
+                "searchKeywords": DefaultGroups.searchKeywordsForGroup(name: trimmedName, description: description)
+            ])
+            return
+        }
+
+        try await createGroup(
+            name: trimmedName,
+            description: "Low-pressure support community",
+            tags: DefaultGroups.tagsForGroup(name: trimmedName, description: "Low-pressure support community"),
+            category: DefaultGroups.categoryForGroup(named: trimmedName),
+            memberIds: [userId],
+            ownerId: userId,
+            allowHistoryAccessForNewMembers: false
+        )
+    }
+
     /// Best-effort: finds users whose `name` field matches exactly (case-sensitive as stored).
     func lookupUserIdsByExactDisplayName(_ name: String) async -> [String] {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -593,7 +827,11 @@ final class FirestoreManager: ObservableObject {
         #if DEBUG
         if Self.isXcodePreview { return }
         #endif
+        if activeCommentsPostId == postId, commentsListener != nil {
+            return
+        }
         stopCommentsListener()
+        activeCommentsPostId = postId
         commentsListener = db.collection("posts").document(postId).collection("comments")
             .order(by: "createdAt", descending: false)
             .addSnapshotListener { [weak self] snapshot, error in
@@ -635,6 +873,7 @@ final class FirestoreManager: ObservableObject {
     func stopCommentsListener() {
         commentsListener?.remove()
         commentsListener = nil
+        activeCommentsPostId = nil
         detailComments = []
     }
 
@@ -648,8 +887,15 @@ final class FirestoreManager: ObservableObject {
             errorMessage = err.localizedDescription
             throw err
         }
+        let postRef = db.collection("posts").document(postId)
+        let postSnap = try await postRef.getDocument()
+        let postData = postSnap.data() ?? [:]
+        if postData["hideComments"] as? Bool == true {
+            let err = NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "Comments are disabled for this post"])
+            errorMessage = err.localizedDescription
+            throw err
+        }
         try await runWrite(successLog: "Comment added") {
-            let postRef = self.db.collection("posts").document(postId)
             let commentRef = postRef.collection("comments").document()
             let batch = self.db.batch()
             batch.setData([
@@ -675,8 +921,15 @@ final class FirestoreManager: ObservableObject {
             errorMessage = err.localizedDescription
             throw err
         }
+        let postRef = db.collection("posts").document(postId)
+        let postSnap = try await postRef.getDocument()
+        let postData = postSnap.data() ?? [:]
+        if postData["hideComments"] as? Bool == true {
+            let err = NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "Comments are disabled for this post"])
+            errorMessage = err.localizedDescription
+            throw err
+        }
         try await runWrite(successLog: "Reply added") {
-            let postRef = self.db.collection("posts").document(postId)
             let parentRef = postRef.collection("comments").document(parentCommentId)
             let replyRef = parentRef.collection("replies").document()
             let batch = self.db.batch()
@@ -810,7 +1063,11 @@ final class FirestoreManager: ObservableObject {
         #if DEBUG
         if Self.isXcodePreview { return }
         #endif
+        if activeFollowingUserId == userId, followingListener != nil {
+            return
+        }
         stopFollowingListener()
+        activeFollowingUserId = userId
         followingListener = db.collection("users").document(userId)
             .addSnapshotListener { [weak self] snapshot, error in
                 guard let self else { return }
@@ -832,6 +1089,7 @@ final class FirestoreManager: ObservableObject {
     func stopFollowingListener() {
         followingListener?.remove()
         followingListener = nil
+        activeFollowingUserId = nil
         followingIds = []
     }
 
@@ -850,6 +1108,11 @@ final class FirestoreManager: ObservableObject {
         }
     }
 
+    /// Compatibility alias for older call sites.
+    func getFollowerCount(userId: String) async -> Int {
+        await fetchFollowerCount(userId: userId)
+    }
+
     func fetchFollowingCount(userId: String) async -> Int {
         if Self.isXcodePreview { return 0 }
         do {
@@ -857,6 +1120,26 @@ final class FirestoreManager: ObservableObject {
             return Int(truncating: aggregate.count)
         } catch {
             AppLogger.error("fetchFollowingCount failed: \(error.localizedDescription)")
+            return 0
+        }
+    }
+
+    /// Compatibility alias for older call sites.
+    func getFollowingCount(userId: String) async -> Int {
+        await fetchFollowingCount(userId: userId)
+    }
+
+    /// Number of mutual relationships for this user (`followers ∩ following`).
+    func getFriendCount(userId: String) async -> Int {
+        if Self.isXcodePreview { return 0 }
+        do {
+            async let followersTask = followersCollection(userId: userId).limit(to: 500).getDocuments()
+            async let followingTask = followingCollection(userId: userId).limit(to: 500).getDocuments()
+            let followerIds = Set(try await followersTask.documents.map(\.documentID))
+            let followingIds = Set(try await followingTask.documents.map(\.documentID))
+            return followerIds.intersection(followingIds).count
+        } catch {
+            AppLogger.error("getFriendCount failed: \(error.localizedDescription)")
             return 0
         }
     }
@@ -1238,8 +1521,11 @@ final class FirestoreManager: ObservableObject {
         let whoops = checkIn.whoopsText.trimmingCharacters(in: .whitespacesAndNewlines)
         let weekly = checkIn.weeklyGoal.trimmingCharacters(in: .whitespacesAndNewlines)
         let monthly = checkIn.monthlyGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let gratitude = checkIn.gratitudeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lookForward = checkIn.lookForwardTo.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let hasContent = !emoji.isEmpty || !insight.isEmpty || !whoops.isEmpty || !weekly.isEmpty || !monthly.isEmpty
+        let hasContent = !emoji.isEmpty || !insight.isEmpty || !whoops.isEmpty
+            || !weekly.isEmpty || !monthly.isEmpty || !gratitude.isEmpty || !lookForward.isEmpty
         guard hasContent else {
             print("[ERROR] Invalid post payload: no usable content")
             errorMessage = "Add an emoji or something about your week before posting."
@@ -1262,7 +1548,11 @@ final class FirestoreManager: ObservableObject {
             }
         }
 
-        let goalLine: String = weekly.isEmpty ? monthly : weekly
+        let goalLine: String = {
+            if !lookForward.isEmpty { return lookForward }
+            if !weekly.isEmpty { return weekly }
+            return monthly
+        }()
         let displayEmoji = emoji.isEmpty ? "✨" : emoji
         let trimmedTitle = checkIn.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedTitle = trimmedTitle.isEmpty ? "Daily reflection 🌿" : trimmedTitle
@@ -1292,6 +1582,7 @@ final class FirestoreManager: ObservableObject {
             "emotionalInsight": insight,
             "whoopsText": whoops,
             "weeklyGoal": goalLine,
+            "lookForwardTo": goalLine,
             "title": resolvedTitle,
             "imageURL": uploadedImageURL,
             "weekNumber": checkIn.weekNumber,
@@ -1308,8 +1599,13 @@ final class FirestoreManager: ObservableObject {
             "commentCount": 0,
             "manualEntry": checkIn.manualEntry,
             "softSupportCounts": Dictionary(uniqueKeysWithValues: SoftSupportReactionKind.allCases.map { ($0.rawValue, 0) }),
-            "softSupportByUser": [:] as [String: [String]]
+            "softSupportByUser": [:] as [String: [String]],
+            "hideReactions": checkIn.hideReactions,
+            "hideComments": checkIn.hideComments
         ]
+        if !gratitude.isEmpty {
+            data["gratitudeText"] = gratitude
+        }
         if let intensity = checkIn.intensity {
             data["intensity"] = intensity
         }
@@ -1638,7 +1934,12 @@ final class FirestoreManager: ObservableObject {
         let whoops = checkIn.whoopsText.trimmingCharacters(in: .whitespacesAndNewlines)
         let weekly = checkIn.weeklyGoal.trimmingCharacters(in: .whitespacesAndNewlines)
         let monthly = checkIn.monthlyGoal.trimmingCharacters(in: .whitespacesAndNewlines)
-        let goalLine = weekly.isEmpty ? monthly : weekly
+        let lookForward = checkIn.lookForwardTo.trimmingCharacters(in: .whitespacesAndNewlines)
+        let goalLine: String = {
+            if !lookForward.isEmpty { return lookForward }
+            if !weekly.isEmpty { return weekly }
+            return monthly
+        }()
         let selected = checkIn.selectedEmotionsOrdered.isEmpty
             ? Array(checkIn.selectedEmotions).sorted()
             : checkIn.selectedEmotionsOrdered
@@ -1656,6 +1957,8 @@ final class FirestoreManager: ObservableObject {
             insight: insight,
             whoop: whoops,
             goal: goalLine,
+            gratitudeText: checkIn.gratitudeText,
+            lookForwardTo: goalLine,
             title: checkIn.title,
             imageURL: checkIn.imageURL,
             selectedEmotions: selected,
@@ -1984,6 +2287,19 @@ final class FirestoreManager: ObservableObject {
             .collection("habitSignals")
     }
 
+    private func eventStreamRef(userId: String) -> CollectionReference {
+        db.collection("users")
+            .document(userId)
+            .collection("eventStream")
+    }
+
+    private func adaptiveProfileRef(userId: String) -> DocumentReference {
+        db.collection("users")
+            .document(userId)
+            .collection("adaptiveProfile")
+            .document("main")
+    }
+
     func fetchRecommendationMemory(userId: String, limit: Int = 300) async -> [String: RecommendationMemory] {
         if Self.isXcodePreview { return [:] }
         do {
@@ -2074,6 +2390,41 @@ final class FirestoreManager: ObservableObject {
         } catch {
             print("⚠️ fetchHabitSignals: \(error.localizedDescription)")
             return []
+        }
+    }
+
+    func saveEmotionalEvent(userId: String, event: EmotionalEvent) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        do {
+            try await self.eventStreamRef(userId: userId).document(event.eventId).setData(event.asFirestoreDictionary(), merge: true)
+            AppLogger.log("[FIRESTORE] Emotional event saved")
+        } catch {
+            AppLogger.error("saveEmotionalEvent failed: \(error.localizedDescription)")
+            throw error
+        }
+    }
+
+    func fetchAdaptiveProfile(userId: String) async -> UserAdaptiveProfile {
+        if Self.isXcodePreview { return UserAdaptiveProfile() }
+        do {
+            let snap = try await adaptiveProfileRef(userId: userId).getDocument()
+            guard snap.exists, let data = snap.data() else { return UserAdaptiveProfile() }
+            return (try? UserAdaptiveProfile.fromFirestoreDictionary(data)) ?? UserAdaptiveProfile()
+        } catch {
+            AppLogger.error("fetchAdaptiveProfile failed: \(error.localizedDescription)")
+            return UserAdaptiveProfile()
+        }
+    }
+
+    func saveAdaptiveProfile(userId: String, profile: UserAdaptiveProfile) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        do {
+            let payload = try profile.asFirestoreDictionary()
+            try await self.adaptiveProfileRef(userId: userId).setData(payload, merge: true)
+            AppLogger.log("[FIRESTORE] Adaptive profile saved")
+        } catch {
+            AppLogger.error("saveAdaptiveProfile failed: \(error.localizedDescription)")
+            throw error
         }
     }
 
@@ -2207,21 +2558,27 @@ final class FirestoreManager: ObservableObject {
     func fetchUserProfile(userId: String) async -> UserProfile? {
         if Self.isXcodePreview { return nil }
         do {
-            let snap = try await userRootRef(userId: userId).getDocument()
-            guard snap.exists, let data = snap.data() else { return nil }
-            print("RAW FIRESTORE:", data)
-            let sanitized = sanitizeFirestoreForJSON(data)
-            guard JSONSerialization.isValidJSONObject(sanitized) else {
-                print("⚠️ fetchUserProfile: sanitized payload is not valid JSON")
-                return nil
+            let rootSnap = try await userRootRef(userId: userId).getDocument()
+            let profileSnap = try await userPublicProfileRef(userId: userId).getDocument()
+            let root = rootSnap.data() ?? [:]
+            let profile = profileSnap.data() ?? [:]
+
+            var merged = profile
+            if merged["name"] == nil {
+                merged["name"] = root["name"] as? String
             }
-            let jsonData = try JSONSerialization.data(withJSONObject: sanitized, options: [])
-            do {
-                return try JSONDecoder().decode(UserProfile.self, from: jsonData)
-            } catch {
-                print("⚠️ fetchUserProfile decode: \(error.localizedDescription)")
-                return nil
+            if merged["profileImageURL"] == nil {
+                merged["profileImageURL"] = root["profileImageURL"] as? String
             }
+            if merged["zodiacSign"] == nil {
+                merged["zodiacSign"] = root["zodiacSign"] as? String
+            }
+            if merged["hasProfileImage"] == nil {
+                merged["hasProfileImage"] = root["hasProfileImage"] as? Bool
+            }
+
+            guard !merged.isEmpty else { return nil }
+            return try UserProfile.fromFirestoreDictionary(merged)
         } catch {
             print("⚠️ fetchUserProfile: \(error.localizedDescription)")
             return nil
@@ -2370,6 +2727,68 @@ final class FirestoreManager: ObservableObject {
         }
     }
 
+    /// Saves a positive check-in reflection for future recommendation tuning.
+    /// Path: `users/{userId}/insights/positiveReflections/{autoId}`
+    func savePositiveReflection(userId: String, emotion: String, text: String, tags: [String]) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let cleanedTags = tags
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+
+        try await runWrite(successLog: "Positive reflection saved") {
+            let ref = self.db.collection("users")
+                .document(userId)
+                .collection("insights")
+                .document("positiveReflections")
+                .collection("items")
+                .document()
+            try await ref.setData([
+                "emotion": emotion,
+                "text": trimmed,
+                "tags": cleanedTags,
+                "createdAt": FieldValue.serverTimestamp()
+            ], merge: true)
+        }
+    }
+
+    /// Top tags extracted from recent positive reflections.
+    func fetchPositiveReflectionTags(userId: String, limit: Int = 40, topK: Int = 8) async -> [String] {
+        if Self.isXcodePreview { return [] }
+        do {
+            let snap = try await db.collection("users")
+                .document(userId)
+                .collection("insights")
+                .document("positiveReflections")
+                .collection("items")
+                .order(by: "createdAt", descending: true)
+                .limit(to: max(1, limit))
+                .getDocuments()
+
+            var counts: [String: Int] = [:]
+            for doc in snap.documents {
+                let tags = doc.data()["tags"] as? [String] ?? []
+                for tag in tags {
+                    let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    guard !trimmed.isEmpty else { continue }
+                    counts[trimmed, default: 0] += 1
+                }
+            }
+            return counts
+                .sorted {
+                    if $0.value != $1.value { return $0.value > $1.value }
+                    return $0.key < $1.key
+                }
+                .prefix(max(1, topK))
+                .map(\.key)
+        } catch {
+            AppLogger.error("fetchPositiveReflectionTags failed: \(error.localizedDescription)")
+            return []
+        }
+    }
+
     /// Full profile save used by `EditProfileView`.
     /// Writes:
     /// - `users/{userId}` (root: display identity)
@@ -2387,6 +2806,9 @@ final class FirestoreManager: ObservableObject {
             try await self.db.collection("users").document(userId).setData([
                 "name": displayName,
                 "username": username,
+                "zodiacSign": profile.zodiacSign ?? "",
+                "profileImageURL": profile.profileImageURL ?? "",
+                "hasProfileImage": profile.hasProfileImage ?? false,
                 "updatedAt": FieldValue.serverTimestamp()
             ], merge: true)
 
@@ -2395,6 +2817,34 @@ final class FirestoreManager: ObservableObject {
 
             let detailsPayload = try details.asFirestoreDictionary()
             try await self.userProfileDetailsRef(userId: userId).setData(detailsPayload, merge: true)
+        }
+    }
+
+    func saveOnboardingProfile(
+        userId: String,
+        displayName: String,
+        zodiacSign: String,
+        hasProfileImage: Bool
+    ) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        let cleanName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanZodiac = zodiacSign.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty, !cleanZodiac.isEmpty else {
+            throw NSError(domain: "FirestoreManager", code: 400, userInfo: [NSLocalizedDescriptionKey: "Name and zodiac are required"])
+        }
+        try await runWrite(successLog: "Onboarding profile saved") {
+            try await self.userRootRef(userId: userId).setData([
+                "name": cleanName,
+                "zodiacSign": cleanZodiac,
+                "hasProfileImage": hasProfileImage,
+                "updatedAt": FieldValue.serverTimestamp()
+            ], merge: true)
+            let payload: [String: Any] = [
+                "name": cleanName,
+                "zodiacSign": cleanZodiac,
+                "hasProfileImage": hasProfileImage
+            ]
+            try await self.userPublicProfileRef(userId: userId).setData(payload, merge: true)
         }
     }
 
@@ -2514,4 +2964,251 @@ final class FirestoreManager: ObservableObject {
         }
     }
     #endif
+
+    // MARK: - Thinking of You
+
+    /// Sends a lightweight "thinking of you" poke. Enforces a 12-hour per-pair cooldown via UserDefaults.
+    func sendThinkingOfYou(from fromId: String, to toId: String) async throws {
+        let cooldownKey = "thinkingOfYou_\(fromId)_\(toId)"
+        if let last = UserDefaults.standard.object(forKey: cooldownKey) as? Date,
+           Date().timeIntervalSince(last) < 12 * 3600 {
+            throw NSError(
+                domain: "ThinkingOfYou",
+                code: 429,
+                userInfo: [NSLocalizedDescriptionKey: "You already reached out recently. Give them a little space. 🤍"]
+            )
+        }
+        _ = try requireAuthUser(matchingExpectedUid: fromId)
+        let ref = db.collection("thinking_of_you").document()
+        try await ref.setData([
+            "fromUserId": fromId,
+            "toUserId": toId,
+            "createdAt": FieldValue.serverTimestamp()
+        ])
+        UserDefaults.standard.set(Date(), forKey: cooldownKey)
+        AppLogger.log("[THINKING_OF_YOU] Sent from \(fromId) to \(toId)")
+    }
+
+    func thinkingOfYouCooldownRemaining(from fromId: String, to toId: String) -> TimeInterval? {
+        let key = "thinkingOfYou_\(fromId)_\(toId)"
+        guard let last = UserDefaults.standard.object(forKey: key) as? Date else { return nil }
+        let elapsed = Date().timeIntervalSince(last)
+        let remaining = 12 * 3600 - elapsed
+        return remaining > 0 ? remaining : nil
+    }
+
+    // MARK: - Direct Messaging
+
+    /// Returns or creates a 1:1 conversation between two users.
+    func fetchOrCreateConversation(between userA: String, and userB: String) async throws -> Conversation {
+        let sorted = [userA, userB].sorted()
+        let existing = try await db.collection("conversations")
+            .whereField("participantIds", isEqualTo: sorted)
+            .limit(to: 1)
+            .getDocuments()
+        if let doc = existing.documents.first, let conv = Conversation(document: doc, myUserId: userA) {
+            return conv
+        }
+        let ref = db.collection("conversations").document()
+        let data: [String: Any] = [
+            "participantIds": sorted,
+            "lastMessage": "",
+            "updatedAt": FieldValue.serverTimestamp()
+        ]
+        try await ref.setData(data)
+        return Conversation(
+            id: ref.documentID,
+            participantIds: sorted,
+            lastMessage: nil,
+            updatedAt: Date()
+        )
+    }
+
+    func fetchConversations(for userId: String) async -> [Conversation] {
+        do {
+            let snap = try await db.collection("conversations")
+                .whereField("participantIds", arrayContains: userId)
+                .order(by: "updatedAt", descending: true)
+                .limit(to: 40)
+                .getDocuments()
+            return snap.documents.compactMap { Conversation(document: $0, myUserId: userId) }
+        } catch {
+            AppLogger.error("fetchConversations failed: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    func fetchMessages(conversationId: String) async -> [DirectMessage] {
+        do {
+            let snap = try await db.collection("conversations")
+                .document(conversationId)
+                .collection("messages")
+                .order(by: "createdAt", descending: false)
+                .limit(to: 100)
+                .getDocuments()
+            return snap.documents.compactMap { DirectMessage(document: $0, conversationId: conversationId) }
+        } catch {
+            AppLogger.error("fetchMessages failed: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    func sendDirectMessage(conversationId: String, senderId: String, text: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: senderId)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let msgRef = db.collection("conversations")
+            .document(conversationId)
+            .collection("messages")
+            .document()
+        try await msgRef.setData([
+            "senderId": senderId,
+            "text": trimmed,
+            "createdAt": FieldValue.serverTimestamp()
+        ])
+        try await db.collection("conversations").document(conversationId).setData([
+            "lastMessage": trimmed,
+            "lastSenderId": senderId,
+            "updatedAt": FieldValue.serverTimestamp()
+        ], merge: true)
+        AppLogger.log("[MSG] Sent in conversation \(conversationId)")
+    }
+
+    // MARK: - Default Groups Seeding
+
+    /// Seeds the 100 default mental-health groups into Firestore (idempotent — skips existing names).
+    func seedDefaultGroupsIfNeeded() async {
+        guard Auth.auth().currentUser != nil else { return }
+        do {
+            let existingSnap = try await db.collection("default_groups").getDocuments()
+            let existingNames = Set(existingSnap.documents.compactMap { ($0.data()["name"] as? String)?.lowercased() })
+            let expectedNames = Set(DefaultGroups.all.map { $0.lowercased() })
+            let missing = expectedNames.subtracting(existingNames)
+            if missing.isEmpty {
+                #if DEBUG
+                print("[GROUP_SEARCH] seedDefaultGroupsIfNeeded complete existing=\(existingNames.count) missing=0")
+                #endif
+                return
+            }
+
+            let batch = db.batch()
+            for name in DefaultGroups.all where missing.contains(name.lowercased()) {
+                let ref = db.collection("default_groups").document(name.lowercased().replacingOccurrences(of: " ", with: "_"))
+                let category = DefaultGroups.categoryForGroup(named: name)
+                let description = "Peer support for \(name.lowercased()) with emotionally safe, low-pressure check-ins."
+                let tags = DefaultGroups.tagsForGroup(name: name, description: description)
+                let searchKeywords = DefaultGroups.searchKeywordsForGroup(name: name, description: description)
+                batch.setData([
+                    "name": name,
+                    "description": description,
+                    "category": category,
+                    "tags": tags,
+                    "searchKeywords": searchKeywords,
+                    "isDefault": true,
+                    "createdAt": FieldValue.serverTimestamp()
+                ], forDocument: ref, merge: true)
+            }
+            try await batch.commit()
+            AppLogger.log("[SEED] Default groups seeded/updated missing=\(missing.count) expected=\(expectedNames.count) existing_before=\(existingNames.count)")
+        } catch {
+            AppLogger.error("seedDefaultGroupsIfNeeded failed: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Group Admin Voting
+
+    /// Casts a vote for `candidateId` as admin in `groupId`. Each user can vote once.
+    func voteForGroupAdmin(groupId: String, candidateId: String, voterId: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: voterId)
+        let ref = db.collection("group_admin_votes").document(groupId)
+        try await ref.setData([
+            "candidates": FieldValue.arrayUnion([candidateId]),
+            "votes_\(candidateId)": FieldValue.arrayUnion([voterId]),
+            "updatedAt": FieldValue.serverTimestamp()
+        ], merge: true)
+        AppLogger.log("[VOTE] \(voterId) voted for \(candidateId) in group \(groupId)")
+    }
+
+    func fetchGroupAdminVotes(groupId: String) async -> [String: Int] {
+        do {
+            let snap = try await db.collection("group_admin_votes").document(groupId).getDocument()
+            guard let data = snap.data() else { return [:] }
+            let candidates = data["candidates"] as? [String] ?? []
+            var result: [String: Int] = [:]
+            for cid in candidates {
+                let voters = data["votes_\(cid)"] as? [String] ?? []
+                result[cid] = voters.count
+            }
+            return result
+        } catch {
+            AppLogger.error("fetchGroupAdminVotes failed: \(error.localizedDescription)")
+            return [:]
+        }
+    }
+
+    private func socialGroup(from doc: DocumentSnapshot) -> SocialGroup? {
+        let data = doc.data() ?? [:]
+        guard let name = data["name"] as? String else {
+            #if DEBUG
+            print("[GROUP_SEARCH][DECODE_FAIL] source=groups id=\(doc.documentID) missing=name fields=\(Array(data.keys))")
+            #endif
+            return nil
+        }
+        let memberIds = data["memberIds"] as? [String] ?? []
+        let owner = (data["ownerId"] as? String) ?? (data["createdBy"] as? String) ?? "seed-default-group"
+        let invited = data["invitedContacts"] as? [String]
+        let allowHistory = data["allowHistoryAccessForNewMembers"] as? Bool
+        let desc = data["description"] as? String
+        let adminIds = data["adminIds"] as? [String]
+        let createdAt = (data["createdAt"] as? Timestamp)?.dateValue()
+        let memberHistoryAccess = data["memberHistoryAccess"] as? [String: Bool]
+        let category = (data["category"] as? String) ?? DefaultGroups.categoryForGroup(named: name)
+        let tags = (data["tags"] as? [String]) ?? DefaultGroups.tagsForGroup(name: name, description: desc)
+        let searchKeywords = (data["searchKeywords"] as? [String]) ?? DefaultGroups.searchKeywordsForGroup(name: name, description: desc)
+        return SocialGroup(
+            id: doc.documentID,
+            name: name,
+            memberIds: memberIds,
+            createdBy: owner,
+            adminIds: adminIds ?? [owner],
+            createdAt: createdAt,
+            invitedContacts: invited,
+            allowHistoryAccessForNewMembers: allowHistory,
+            memberHistoryAccess: memberHistoryAccess,
+            description: desc,
+            tags: tags,
+            searchKeywords: searchKeywords,
+            category: category
+        )
+    }
+
+    private func defaultGroupStub(from doc: DocumentSnapshot) -> SocialGroup? {
+        let data = doc.data() ?? [:]
+        guard let name = data["name"] as? String else {
+            #if DEBUG
+            print("[GROUP_SEARCH][DECODE_FAIL] source=default_groups id=\(doc.documentID) missing=name fields=\(Array(data.keys))")
+            #endif
+            return nil
+        }
+        let description = data["description"] as? String
+        let category = (data["category"] as? String) ?? DefaultGroups.categoryForGroup(named: name)
+        let tags = (data["tags"] as? [String]) ?? DefaultGroups.tagsForGroup(name: name, description: description)
+        let searchKeywords = (data["searchKeywords"] as? [String]) ?? DefaultGroups.searchKeywordsForGroup(name: name, description: description)
+        return SocialGroup(
+            id: "default_\(doc.documentID)",
+            name: name,
+            memberIds: [],
+            createdBy: "seed-default-group",
+            adminIds: ["seed-default-group"],
+            createdAt: nil,
+            invitedContacts: nil,
+            allowHistoryAccessForNewMembers: nil,
+            memberHistoryAccess: nil,
+            description: description,
+            tags: tags,
+            searchKeywords: searchKeywords,
+            category: category
+        )
+    }
 }
+

@@ -7,9 +7,10 @@ import UIKit
 struct GrowView: View {
     @EnvironmentObject private var firestore: FirestoreManager
     @EnvironmentObject private var auth: AuthManager
+    @EnvironmentObject private var tabRouter: TabRouter
 
     @StateObject private var viewModel = GrowViewModel()
-    @StateObject private var calendarViewModel = CalendarViewModel()
+    @ObservedObject var calendarViewModel: CalendarViewModel
     @StateObject private var outdoorSuggestions = OutdoorSuggestionsManager()
     @Namespace private var calendarNamespace
 
@@ -17,122 +18,147 @@ struct GrowView: View {
     @State private var recommendationFeedback: [UUID: Bool] = [:]
     @State private var recommendationFeedbackSubmitting: Set<UUID> = []
     @State private var shownRecommendationIdsThisSession: Set<String> = []
+    @State private var bootstrappedUserId: String?
+    @State private var entriesSyncSignature: String = ""
     @State private var safetyCardDismissed = false
     @State private var therapyResourcesDismissed = false
     @State private var showManualEntrySheet = false
+    private let dopamineMenuAnchorId = "grow_dopamine_menu_anchor"
+    private var eventStream: EmotionalEventStreamService {
+        EmotionalEventStreamService(firestore: firestore)
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                calendarSection
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 16) {
+                    calendarSection
 
-                dailyInsightCard
+                    dailyInsightCard
 
-                helpfulTagInsightCard
-                habitReinforcementCard
+                    helpfulTagInsightCard
+                    habitReinforcementCard
 
-                patternsSection
+                    patternsSection
 
-                outdoorContextSection
+                    outdoorContextSection
 
-                if showGrowSafetyPanel {
-                    EmotionalSafetySupportCard(resources: growSafetyResources, showCrisisLine: growShowCrisisLine) {
-                        safetyCardDismissed = true
-                    }
-                }
-
-                if !therapyResourcesDismissed, !growTherapyResources.isEmpty {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text("Suggested resources")
-                                .font(.headline)
-                                .foregroundStyle(AppTheme.colors.textPrimary)
-                            Spacer(minLength: 8)
-                            Button("Dismiss") { therapyResourcesDismissed = true }
-                                .font(.caption.weight(.semibold))
-                                .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(growTherapyResources) { resource in
-                            ResourceCardView(resource: resource)
+                    if showGrowSafetyPanel {
+                        EmotionalSafetySupportCard(resources: growSafetyResources, showCrisisLine: growShowCrisisLine) {
+                            safetyCardDismissed = true
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
 
-                recommendationsSection
-                dopamineMenuSection
+                    if !therapyResourcesDismissed, !growTherapyResources.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("Suggested resources")
+                                    .font(.headline)
+                                    .foregroundStyle(AppTheme.colors.textPrimary)
+                                Spacer(minLength: 8)
+                                Button("Dismiss") { therapyResourcesDismissed = true }
+                                    .font(.caption.weight(.semibold))
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(.secondary)
+                            }
+                            ForEach(growTherapyResources) { resource in
+                                ResourceCardView(resource: resource)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    recommendationsSection
+                    dopamineMenuSection
+                }
+                .padding()
+                .padding(.top, 8)
             }
-            .padding()
-            .padding(.top, 8)
-        }
-        .scrollIndicators(.visible)
-        .background(AppTheme.colors.secondaryBackground.ignoresSafeArea())
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.large)
-        .task(id: auth.currentUser?.id) {
-            await loadRecommendationFeedback()
-            await loadRecommendationMemory()
-            await loadHabitSignals()
-            await loadUserPreferences()
-            await MainActor.run {
-                guard viewModel.userPreferences == nil,
-                      !PreferencesOnboardingView.hasCompletedPreferencesProfile,
-                      !UserDefaults.standard.bool(forKey: PreferencesOnboardingView.autoPromptKey)
-                else { return }
-                UserDefaults.standard.set(true, forKey: PreferencesOnboardingView.autoPromptKey)
-                showPreferencesOnboarding = true
+            .scrollIndicators(.visible)
+            .background(AppTheme.colors.secondaryBackground.ignoresSafeArea())
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.large)
+            .task(id: auth.currentUser?.id) {
+                await bootstrapGrowIfNeeded()
             }
-        }
-        .onAppear {
-            syncEntriesFromFirestore()
-            outdoorSuggestions.startIfNeeded()
-        }
-        .onReceive(firestore.$posts) { _ in
-            syncEntriesFromFirestore()
-        }
-        .onChange(of: auth.currentUser?.id) { _, _ in
-            recommendationFeedback = [:]
-            recommendationFeedbackSubmitting = []
-            shownRecommendationIdsThisSession = []
-            safetyCardDismissed = false
-            therapyResourcesDismissed = false
-            syncEntriesFromFirestore()
-            Task { await loadHabitSignals() }
-        }
-        .onChange(of: viewModel.selectedEmotion) { _, _ in
-            calendarViewModel.clearSelection()
-            refreshRecommendations()
-        }
-        .onChange(of: outdoorSuggestions.weatherHint) { _, _ in
-            refreshRecommendations()
-        }
-        .onChange(of: viewModel.personalizedRecommendations) { _, _ in
-            Task { await recordShownRecommendationsIfNeeded() }
-        }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showPreferencesOnboarding = true
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.body.weight(.semibold))
+            .onAppear {
+                syncEntriesFromFirestore(reason: "onAppear")
+                outdoorSuggestions.startIfNeeded()
+            }
+            .onReceive(firestore.$posts) { _ in
+                syncEntriesFromFirestore(reason: "posts_update")
+            }
+            .onChange(of: auth.currentUser?.id) { _, _ in
+                recommendationFeedback = [:]
+                recommendationFeedbackSubmitting = []
+                shownRecommendationIdsThisSession = []
+                bootstrappedUserId = nil
+                entriesSyncSignature = ""
+                safetyCardDismissed = false
+                therapyResourcesDismissed = false
+                syncEntriesFromFirestore(reason: "auth_changed")
+            }
+            .onChange(of: viewModel.selectedEmotion) { _, _ in
+                #if DEBUG
+                print("[GROW_STABILITY] selectedEmotion changed to \(viewModel.selectedEmotion ?? "All")")
+                #endif
+                calendarViewModel.clearSelection()
+                refreshRecommendations(reason: "emotion_filter_changed")
+            }
+            .onChange(of: outdoorSuggestions.weatherHint) { _, _ in
+                refreshRecommendations(reason: "weather_changed")
+            }
+            .onChange(of: viewModel.personalizedRecommendations) { _, _ in
+                Task { await recordShownRecommendationsIfNeeded() }
+            }
+            .onChange(of: tabRouter.focusDopamineMenuInGrow) { _, shouldFocus in
+                guard shouldFocus else { return }
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(dopamineMenuAnchorId, anchor: .top)
+                }
+                tabRouter.consumeDopamineMenuFocusRequest()
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showPreferencesOnboarding = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.body.weight(.semibold))
+                            Text("Personalize")
+                                .font(.subheadline.weight(.semibold))
+                        }
                         .accessibilityLabel("Personalize recommendations")
+                    }
                 }
             }
-        }
-        .sheet(isPresented: $showPreferencesOnboarding) {
-            PreferencesOnboardingView()
-                .environmentObject(firestore)
-                .environmentObject(auth)
-                .onDisappear {
-                    Task { await loadUserPreferences() }
+            .sheet(isPresented: $showPreferencesOnboarding) {
+                PreferencesOnboardingView()
+                    .environmentObject(firestore)
+                    .environmentObject(auth)
+                    .onDisappear {
+                        Task {
+                            await loadUserPreferences()
+                            refreshRecommendations(reason: "preferences_onboarding_closed")
+                        }
+                    }
+            }
+            .sheet(isPresented: $showManualEntrySheet) {
+                if let date = calendarViewModel.selectedCalendarDate {
+                    ManualCalendarEntrySheetView(date: date) { emotion, intensity, note in
+                        Task { await saveManualCalendarEntry(date: date, emotion: emotion, intensity: intensity, note: note) }
+                    }
                 }
-        }
-        .sheet(isPresented: $showManualEntrySheet) {
-            if let date = calendarViewModel.selectedCalendarDate {
-                ManualCalendarEntrySheetView(date: date) { emotion, intensity, note in
-                    Task { await saveManualCalendarEntry(date: date, emotion: emotion, intensity: intensity, note: note) }
+            }
+            .onChange(of: showPreferencesOnboarding) { _, isShown in
+                if isShown {
+                    showManualEntrySheet = false
+                }
+            }
+            .onChange(of: showManualEntrySheet) { _, isShown in
+                if isShown {
+                    showPreferencesOnboarding = false
                 }
             }
         }
@@ -142,14 +168,12 @@ struct GrowView: View {
         guard let uid = auth.currentUser?.id else {
             await MainActor.run {
                 viewModel.updateRecommendationFeedback([])
-                refreshRecommendations()
             }
             return
         }
         let rows = await firestore.fetchRecommendationFeedbackSummary(userId: uid)
         await MainActor.run {
             viewModel.updateRecommendationFeedback(rows.map { (title: $0.title, helpful: $0.helpful) })
-            refreshRecommendations()
         }
     }
 
@@ -157,14 +181,12 @@ struct GrowView: View {
         guard let uid = auth.currentUser?.id else {
             await MainActor.run {
                 viewModel.updateRecommendationMemory([:])
-                refreshRecommendations()
             }
             return
         }
         let memory = await firestore.fetchRecommendationMemory(userId: uid)
         await MainActor.run {
             viewModel.updateRecommendationMemory(memory)
-            refreshRecommendations()
         }
     }
 
@@ -194,7 +216,9 @@ struct GrowView: View {
         guard let e = viewModel.entries.sorted(by: { $0.date > $1.date }).first else { return [] }
         let text = [
             e.emotionalInsight,
+            e.gratitudeText,
             e.whoopsText,
+            e.lookForwardTo,
             e.weeklyGoal,
             e.monthlyGoal
         ].joined(separator: " ")
@@ -210,16 +234,28 @@ struct GrowView: View {
         return EmotionalSafetySignals.containsCrisisLanguage(text)
     }
 
-    private func syncEntriesFromFirestore() {
+    private func syncEntriesFromFirestore(reason: String) {
         let list = firestore.wrapupHistoryEntries(forUserId: auth.currentUser?.id)
+        let signature = list
+            .sorted { $0.date > $1.date }
+            .map { "\($0.id)|\($0.date.timeIntervalSince1970)|\($0.intensity ?? -1)" }
+            .joined(separator: ";")
+        guard signature != entriesSyncSignature else { return }
+        entriesSyncSignature = signature
+        #if DEBUG
+        print("[GROW_STABILITY] sync entries reason=\(reason) count=\(list.count)")
+        #endif
         viewModel.syncEntries(list)
         if let uid = auth.currentUser?.id {
             viewModel.mergeDerivedHabitSignals(userId: uid)
         }
-        refreshRecommendations()
+        refreshRecommendations(reason: "entries_synced")
     }
 
-    private func refreshRecommendations() {
+    private func refreshRecommendations(reason: String) {
+        #if DEBUG
+        print("[GROW_STABILITY] refresh recommendations reason=\(reason)")
+        #endif
         viewModel.refreshPersonalizedRecommendations(weather: outdoorSuggestions.weatherHint)
     }
 
@@ -227,14 +263,12 @@ struct GrowView: View {
         guard let uid = auth.currentUser?.id else {
             await MainActor.run {
                 viewModel.setUserPreferences(nil)
-                refreshRecommendations()
             }
             return
         }
         let prefs = await firestore.fetchUserPreferences(userId: uid)
         await MainActor.run {
             viewModel.setUserPreferences(prefs)
-            refreshRecommendations()
         }
     }
 
@@ -247,6 +281,50 @@ struct GrowView: View {
         let derived = HabitReinforcementEngine.deriveSignals(from: viewModel.entries, userId: uid)
         let merged = Array(Set(fetched + derived)).sorted { $0.createdAt > $1.createdAt }
         await MainActor.run { viewModel.updateHabitSignals(merged) }
+    }
+
+    private func loadAdaptiveProfile() async {
+        guard let uid = auth.currentUser?.id else {
+            await MainActor.run { viewModel.updateAdaptiveProfile(nil) }
+            return
+        }
+        let profile = await firestore.fetchAdaptiveProfile(userId: uid)
+        await MainActor.run { viewModel.updateAdaptiveProfile(profile) }
+    }
+
+    private func bootstrapGrowIfNeeded() async {
+        guard let uid = auth.currentUser?.id else {
+            await MainActor.run {
+                viewModel.updateRecommendationFeedback([])
+                viewModel.updateRecommendationMemory([:])
+                viewModel.updateHabitSignals([])
+                viewModel.updateAdaptiveProfile(nil)
+                viewModel.setUserPreferences(nil)
+                bootstrappedUserId = nil
+            }
+            refreshRecommendations(reason: "bootstrap_no_user")
+            return
+        }
+        if bootstrappedUserId == uid { return }
+        #if DEBUG
+        print("[GROW_STABILITY] bootstrap grow user=\(uid)")
+        #endif
+        await MainActor.run { bootstrappedUserId = uid }
+        async let feedbackTask: Void = loadRecommendationFeedback()
+        async let memoryTask: Void = loadRecommendationMemory()
+        async let habitsTask: Void = loadHabitSignals()
+        async let adaptiveTask: Void = loadAdaptiveProfile()
+        async let prefsTask: Void = loadUserPreferences()
+        _ = await (feedbackTask, memoryTask, habitsTask, adaptiveTask, prefsTask)
+        refreshRecommendations(reason: "bootstrap_complete")
+        await MainActor.run {
+            guard viewModel.userPreferences == nil,
+                  !PreferencesOnboardingView.hasCompletedPreferencesProfile,
+                  !UserDefaults.standard.bool(forKey: PreferencesOnboardingView.autoPromptKey)
+            else { return }
+            UserDefaults.standard.set(true, forKey: PreferencesOnboardingView.autoPromptKey)
+            showPreferencesOnboarding = true
+        }
     }
 
     private func submitFeedback(_ rec: Recommendation, helpful: Bool) async {
@@ -273,21 +351,20 @@ struct GrowView: View {
 
         do {
             AppLogger.log("[RECOMMENDATION] Sending feedback rec=\(rec.id.uuidString) helpful=\(v)")
-            try await firestore.submitRecommendationFeedback(
+            await eventStream.logRecommendationInteraction(
                 userId: uid,
-                recommendationId: rec.id.uuidString,
-                title: rec.title,
-                reason: rec.reason,
-                type: rec.type,
-                helpful: v
+                recommendation: rec,
+                actionType: v ? .complete : .dismiss,
+                source: .growTab,
+                didHelp: v,
+                emotionBefore: currentEmotionSnapshot,
+                emotionAfter: nil,
+                metadata: ["surface": "grow_feedback"]
             )
-            if v {
-                try await firestore.recordRecommendationAccepted(userId: uid, recommendationId: rec.id.uuidString)
-            } else {
-                try await firestore.recordRecommendationDismissed(userId: uid, recommendationId: rec.id.uuidString)
-            }
             await loadRecommendationFeedback()
             await loadRecommendationMemory()
+            await loadAdaptiveProfile()
+            refreshRecommendations(reason: "feedback_submitted")
             await MainActor.run { recommendationFeedbackSubmitting.remove(rec.id) }
         } catch {
             AppLogger.error("Recommendation feedback failed: \(error.localizedDescription)")
@@ -304,23 +381,34 @@ struct GrowView: View {
 
     private func recordShownRecommendationsIfNeeded() async {
         guard let uid = auth.currentUser?.id else { return }
-        let recIds = viewModel.personalizedRecommendations.map { $0.id.uuidString }
+        let recommendations = viewModel.personalizedRecommendations
+        let recIds = recommendations.map { $0.id.uuidString }
         let pending = recIds.filter { !shownRecommendationIdsThisSession.contains($0) }
         guard !pending.isEmpty else { return }
 
         var wrote = false
         for recId in pending {
-            do {
-                try await firestore.recordRecommendationShown(userId: uid, recommendationId: recId)
-                await MainActor.run { shownRecommendationIdsThisSession.insert(recId) }
-                wrote = true
-            } catch {
-                print("⚠️ recommendation shown memory: \(error.localizedDescription)")
-            }
+            guard let rec = recommendations.first(where: { $0.id.uuidString == recId }) else { continue }
+            await eventStream.logRecommendationShown(
+                userId: uid,
+                recommendation: rec,
+                source: .growTab,
+                emotionBefore: currentEmotionSnapshot
+            )
+            await MainActor.run { shownRecommendationIdsThisSession.insert(recId) }
+            wrote = true
         }
         if wrote {
             await loadRecommendationMemory()
+            await loadAdaptiveProfile()
         }
+    }
+    private var currentEmotionSnapshot: EmotionSnapshot? {
+        guard let latest = viewModel.entries.sorted(by: { $0.date > $1.date }).first else { return nil }
+        return EmotionSnapshot(
+            emotion: latest.firstSelectedEmotionLabel,
+            intensity: Double(latest.intensity ?? 5)
+        )
     }
 
     // MARK: Calendar (hero)
@@ -333,6 +421,7 @@ struct GrowView: View {
                 EmotionCalendarGridView(
                     calendar: calendarViewModel,
                     entries: viewModel.entries,
+                    selectedEmotion: viewModel.selectedEmotion,
                     namespace: calendarNamespace
                 )
             }
@@ -396,12 +485,25 @@ struct GrowView: View {
     }
 
     private var emotionFilterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        let emotionOptions: [String] = {
+            var out: [String] = []
+            for emotion in viewModel.topEmotions {
+                let exists = out.contains { $0.caseInsensitiveCompare(emotion) == .orderedSame }
+                if !exists { out.append(emotion) }
+            }
+            if let selected = viewModel.selectedEmotion,
+               !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !out.contains(where: { $0.caseInsensitiveCompare(selected) == .orderedSame }) {
+                out.insert(selected, at: 0)
+            }
+            return out
+        }()
+        return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 EmotionChipView(title: "All", isSelected: viewModel.selectedEmotion == nil) {
                     viewModel.selectedEmotion = nil
                 }
-                ForEach(viewModel.topEmotions, id: \.self) { emo in
+                ForEach(emotionOptions, id: \.self) { emo in
                     EmotionChipView(title: emo, isSelected: viewModel.selectedEmotion == emo) {
                         viewModel.selectedEmotion = emo
                     }
@@ -531,6 +633,19 @@ struct GrowView: View {
                         selectedFeedback: recommendationFeedback[rec.id],
                         onStart: {
                             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            guard let uid = auth.currentUser?.id else { return }
+                            Task {
+                                await eventStream.logRecommendationInteraction(
+                                    userId: uid,
+                                    recommendation: rec,
+                                    actionType: .click,
+                                    source: .growTab,
+                                    didHelp: nil,
+                                    emotionBefore: currentEmotionSnapshot,
+                                    emotionAfter: nil,
+                                    metadata: ["surface": "grow_recommendation_card"]
+                                )
+                            }
                         },
                         onFeedback: { helpful in
                             Task { await submitFeedback(rec, helpful: helpful) }
@@ -544,12 +659,14 @@ struct GrowView: View {
 
     private var dopamineMenuSection: some View {
         DopamineMenuView()
+            .id(dopamineMenuAnchorId)
     }
 
     private func saveManualCalendarEntry(date: Date, emotion: String, intensity: Int, note: String?) async {
         guard let uid = auth.currentUser?.id else { return }
         let rawName = auth.currentUser?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let authorName = rawName.isEmpty ? "Member" : rawName
+        let previousEntries = firestore.wrapupHistoryEntries(forUserId: uid)
         let week = Calendar.current.component(.weekOfYear, from: date)
         let emoji = ReactionManager.emojiForEmotionLabel(emotion)
         let entry = CheckInData(
@@ -573,7 +690,27 @@ struct GrowView: View {
         )
         let ok = await firestore.createPost(from: entry, authorId: uid, authorName: authorName)
         if ok {
-            syncEntriesFromFirestore()
+            let stream = EmotionalEventStreamService(firestore: firestore)
+            let beforeSnapshot: EmotionSnapshot? = {
+                guard let previous = previousEntries.sorted(by: { $0.date > $1.date }).first else { return nil }
+                return EmotionSnapshot(
+                    emotion: previous.firstSelectedEmotionLabel,
+                    intensity: Double(previous.intensity ?? 5)
+                )
+            }()
+            let afterSnapshot = EmotionSnapshot(
+                emotion: emotion,
+                intensity: Double(max(1, min(10, intensity)))
+            )
+            await stream.logEmotionCheckIn(
+                userId: uid,
+                source: .growTab,
+                emotionBefore: beforeSnapshot,
+                emotionAfter: afterSnapshot,
+                tags: [emotion.lowercased()],
+                metadata: ["flow": "manual_calendar_entry"]
+            )
+            syncEntriesFromFirestore(reason: "manual_entry_saved")
         } else {
             print("⚠️ manual calendar entry save failed")
         }
@@ -583,7 +720,7 @@ struct GrowView: View {
 #if DEBUG
 #Preview {
     NavigationStack {
-        GrowView()
+        GrowView(calendarViewModel: CalendarViewModel())
             .environmentObject(AuthManager(previewLoggedIn: true))
             .environmentObject(FirestoreManager.shared)
     }

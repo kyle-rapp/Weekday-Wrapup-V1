@@ -24,6 +24,9 @@ struct PostDetailView: View {
     private var livePost: FeedPost {
         firestore.posts.first(where: { $0.id == post.id }) ?? post
     }
+    private var isAuthor: Bool {
+        uid == livePost.authorId
+    }
 
     private var isFollowingAuthor: Bool {
         firestore.isFollowing(livePost.authorId)
@@ -140,15 +143,21 @@ struct PostDetailView: View {
                         }
                     }
 
-                    FeedReactionRow(
-                        livePost: livePost,
-                        uid: uid,
-                        onOpenPalette: {
-                            withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
-                                showExpandedReactionPalette = true
+                    if !livePost.hideReactions || isAuthor {
+                        FeedReactionRow(
+                            livePost: livePost,
+                            uid: uid,
+                            onOpenPalette: {
+                                withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
+                                    showExpandedReactionPalette = true
+                                }
                             }
-                        }
-                    )
+                        )
+                    } else {
+                        Label("Reactions hidden by author", systemImage: "eye.slash")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
 
                     HStack(spacing: 20) {
                         Button {
@@ -171,41 +180,51 @@ struct PostDetailView: View {
                         .scaleEffect(livePost.isLikedByCurrentUser(uid) ? 1.12 : 1.0)
                         .animation(.spring(response: 0.35, dampingFraction: 0.62), value: livePost.isLikedByCurrentUser(uid))
 
-                        Label("\(livePost.commentCount) Comment\(livePost.commentCount == 1 ? "" : "s")", systemImage: "bubble.right.fill")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                        if livePost.commentsEnabled || isAuthor {
+                            Label("\(livePost.commentCount) Comment\(livePost.commentCount == 1 ? "" : "s")", systemImage: "bubble.right.fill")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
 
                         Spacer()
                     }
 
-                    Divider()
-                        .padding(.vertical, 4)
+                    if livePost.commentsEnabled || isAuthor {
+                        Divider()
+                            .padding(.vertical, 4)
 
-                    Text("Comments")
-                        .font(.title3.bold())
+                        Text("Comments")
+                            .font(.title3.bold())
 
-                    if firestore.detailComments.isEmpty {
-                        Text("No comments yet—be the first to say something kind.")
+                        if firestore.detailComments.isEmpty {
+                            Text("No comments yet—be the first to say something kind.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .padding(.vertical, 8)
+                        } else {
+                            LazyVStack(alignment: .leading, spacing: 12) {
+                                ForEach(firestore.detailComments) { comment in
+                                    FeedCommentRow(postId: livePost.id, comment: comment, depth: 0)
+                                        .transition(.asymmetric(insertion: .opacity.combined(with: .move(edge: .bottom)), removal: .opacity))
+                                }
+                            }
+                            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: firestore.detailComments.count)
+                        }
+
+                        commentComposer
+                    } else {
+                        Label("Comments are turned off for this post.", systemImage: "bubble.right.slash.fill")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                            .padding(.vertical, 8)
-                    } else {
-                        LazyVStack(alignment: .leading, spacing: 12) {
-                            ForEach(firestore.detailComments) { comment in
-                                FeedCommentRow(postId: livePost.id, comment: comment, depth: 0)
-                                    .transition(.asymmetric(insertion: .opacity.combined(with: .move(edge: .bottom)), removal: .opacity))
-                            }
-                        }
-                        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: firestore.detailComments.count)
+                            .padding(.top, 6)
                     }
-
-                    commentComposer
                 }
                 .padding(22)
             }
             .simultaneousGesture(
                 LongPressGesture(minimumDuration: 0.45)
                     .onEnded { _ in
+                        guard !livePost.hideReactions || isAuthor else { return }
                         guard uid != nil else { return }
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                         withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
@@ -501,8 +520,8 @@ private struct FeedCommentRow: View {
 
             HStack(spacing: 10) {
                 commentReactionChip(emoji: "❤️", postId: postId, comment: comment)
-                commentReactionChip(emoji: "👍", postId: postId, comment: comment)
-                commentReactionChip(emoji: "🙏", postId: postId, comment: comment)
+                commentReactionChip(emoji: "😌", postId: postId, comment: comment)
+                commentReactionChip(emoji: "🥺", postId: postId, comment: comment)
             }
 
             ForEach(comment.replies) { reply in

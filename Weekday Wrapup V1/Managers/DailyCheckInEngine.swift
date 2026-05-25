@@ -17,15 +17,41 @@ struct DailyCheckInAnalysis: Equatable {
     let trend: DailyEmotionalTrend
 }
 
+/// Broad polarity of the checked-in emotion — drives which post-check-in UI variant to show.
+enum EmotionPolarity: Equatable {
+    case positive   // Joyful, Powerful, Peaceful + their secondaries
+    case negative   // Sad, Mad, Scared + their secondaries
+    case unknown
+}
+
 struct DailyRecommendationBundle: Equatable {
     /// Raw primary emotion label from the check-in (for safety routing).
     let checkInEmotion: String
+    /// Intensity 1–10 from the check-in slider.
+    let intensity: Int
     /// Original check-in text blob (insight/goals) for keyword resource matching.
     let sourceText: String
     let analysis: DailyCheckInAnalysis
     let immediate: Recommendation
     let personalized: Recommendation
     let resource: ResourceRecommendation
+}
+
+/// Lightweight hook for reusing reflection text in recommendations.
+enum EmotionAnalyticsService {
+    static func extractHelpfulTags(from text: String) -> [String] {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return [] }
+
+        let keywordTags = HelpfulTagger.extractTags(from: normalized)
+        let freeWordTags = normalized
+            .lowercased()
+            .split { !$0.isLetter }
+            .map(String.init)
+            .filter { $0.count >= 4 }
+        var seen = Set<String>()
+        return (keywordTags + freeWordTags).filter { seen.insert($0).inserted }
+    }
 }
 
 enum DailyCheckInEngine {
@@ -72,6 +98,7 @@ enum DailyCheckInEngine {
         )
         return DailyRecommendationBundle(
             checkInEmotion: emotion,
+            intensity: intensity,
             sourceText: journalText,
             analysis: analysis,
             immediate: immediate,
@@ -278,5 +305,35 @@ enum DailyCheckInEngine {
             emotionTags: tags,
             stressors: stressors
         )
+    }
+
+    // MARK: - Polarity Classification
+
+    /// Maps any emotion label (primary or secondary) to its broad polarity.
+    static func polarity(for emotion: String) -> EmotionPolarity {
+        let e = emotion.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        let positives: Set<String> = [
+            "joyful", "powerful", "peaceful",
+            "excited", "sensuous", "energetic", "cheerful", "creative", "hopeful",
+            "aware", "proud", "respected", "appreciated", "important", "faithful",
+            "content", "thoughtful", "intimate", "loving", "trusting", "nurturing"
+        ]
+        let negatives: Set<String> = [
+            "sad", "mad", "scared",
+            "lonely", "bored", "tired", "depressed", "ashamed", "guilty",
+            "hurt", "hostile", "angry", "frustrated", "selfish", "hateful",
+            "critical", "confused", "rejected", "helpless", "submissive", "insecure"
+        ]
+
+        if positives.contains(e) { return .positive }
+        if negatives.contains(e) { return .negative }
+
+        if e.contains("joy") || e.contains("happy") || e.contains("peace") ||
+           e.contains("powerful") || e.contains("calm") || e.contains("grate") { return .positive }
+        if e.contains("sad") || e.contains("mad") || e.contains("scar") ||
+           e.contains("angry") || e.contains("anxious") || e.contains("depress") { return .negative }
+
+        return .unknown
     }
 }

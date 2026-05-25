@@ -25,6 +25,10 @@ final class PersonalizedRecommendationEngine {
     ) -> [Recommendation] {
         let e = emotion.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let level = max(1, min(10, intensity))
+        let positiveEmotions = ["happy", "joyful", "peaceful", "grateful", "excited", "content", "proud"]
+        let negativeEmotions = ["sad", "anxious", "angry", "overwhelmed", "lonely", "stressed"]
+        let isPositiveEmotion = positiveEmotions.contains(where: { e.contains($0) })
+        let isNegativeEmotion = negativeEmotions.contains(where: { e.contains($0) })
         if history.count < 7 {
             return coldStartRecommendations(emotion: e, intensity: level, preferences: preferences, weather: weather)
         }
@@ -175,8 +179,27 @@ final class PersonalizedRecommendationEngine {
             )
         }
 
+        if isPositiveEmotion {
+            for rec in positiveRecommendations() {
+                add(
+                    rec.title,
+                    rec.reason,
+                    rec.action,
+                    rec.type,
+                    emotionMatch: 2,
+                    tagMatch: 1,
+                    preferenceMatch: 1,
+                    historyMatch: 1,
+                    tags: rec.tags,
+                    emotionTargets: rec.emotionTargets,
+                    intensityRange: rec.intensityRange
+                )
+            }
+        }
+
         // --- Emotion bases ---
-        if e.contains("angry") || e.contains("mad") || e.contains("frustrated") {
+        if !isPositiveEmotion && (isNegativeEmotion || e.contains("angry") || e.contains("mad") || e.contains("frustrated")) {
+            if e.contains("angry") || e.contains("mad") || e.contains("frustrated") {
             let tier = emotionTier(for: ["angry", "mad", "frustrated"])
             if level <= 4 {
                 add("Change rooms for two minutes", "Small spatial shifts can interrupt the heat of frustration.", "Move", .regulation, emotionMatch: tier, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
@@ -185,7 +208,7 @@ final class PersonalizedRecommendationEngine {
             } else {
                 add("Box breathing, four counts", "At high intensity, simple breath pacing is a reliable regulator.", "Breathe", .regulation, emotionMatch: tier, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
             }
-        } else if e.contains("sad") || e.contains("hurt") || e.contains("lonely") {
+            } else if e.contains("sad") || e.contains("hurt") || e.contains("lonely") {
             let tier = emotionTier(for: ["sad", "hurt", "lonely"])
             if level <= 4 {
                 add("Warm drink + one window of light", "Low intensity sadness often softens with tiny sensory care.", "Rest", .regulation, emotionMatch: tier, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
@@ -194,7 +217,7 @@ final class PersonalizedRecommendationEngine {
             } else {
                 add("Ground with 5-4-3-2-1", "When sadness feels heavy, sensory grounding can steady the body.", "Ground", .regulation, emotionMatch: tier, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
             }
-        } else if e.contains("anxious") || e.contains("worried") || e.contains("nervous") || e.contains("scared") {
+            } else if e.contains("anxious") || e.contains("worried") || e.contains("nervous") || e.contains("scared") || e.contains("overwhelmed") || e.contains("stressed") {
             let tier = emotionTier(for: ["anxious", "worried", "nervous", "scared"])
             if level <= 4 {
                 add("Label the worry in one sentence", "Naming tightens the loop—keep it short and kind.", "Write", .reflection, emotionMatch: tier, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
@@ -203,17 +226,7 @@ final class PersonalizedRecommendationEngine {
             } else {
                 add("Feet on the floor, press gently", "High anxiety benefits from concrete body anchors.", "Ground", .regulation, emotionMatch: tier, tagMatch: 0, preferenceMatch: 0, historyMatch: 0)
             }
-        } else if e.contains("peace") || e.contains("calm") || e.contains("content") || e.contains("happy") || e.contains("joy") {
-            add(
-                "Lock in one micro-habit",
-                "You’re in a steadier window—notice what you did today that you can repeat tomorrow.",
-                "Note it",
-                .reflection,
-                emotionMatch: 2,
-                tagMatch: 0,
-                preferenceMatch: 0,
-                historyMatch: 0
-            )
+            }
         }
 
         // --- Safe defaults ---
@@ -246,7 +259,9 @@ final class PersonalizedRecommendationEngine {
             }
         }
 
-        let uniqueRecs = bestByTitle.values.map(\.rec)
+        let uniqueRecs = bestByTitle.values
+            .map(\.rec)
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         let likedTitles = Set(feedbackRows.filter { $0.helpful }.map { $0.title.lowercased() })
         let dislikedTitles = Set(feedbackRows.filter { !$0.helpful }.map { $0.title.lowercased() })
         let likedIds = Set(uniqueRecs.filter { likedTitles.contains($0.title.lowercased()) }.map(\.id))
@@ -277,7 +292,12 @@ final class PersonalizedRecommendationEngine {
                 return Candidate(score: base + v2, rec: rec)
             }
             .filter { $0.score >= 10 }
-            .sorted { $0.score > $1.score }
+            .sorted {
+                if $0.score != $1.score {
+                    return $0.score > $1.score
+                }
+                return $0.rec.title.localizedCaseInsensitiveCompare($1.rec.title) == .orderedAscending
+            }
         let mixed = Self.pickMixedTypes(from: sorted, maxCount: 5)
         let final = mixed.filter { shouldShow($0, context: context) }
         let capped = Array(final.prefix(3))
@@ -462,6 +482,40 @@ final class PersonalizedRecommendationEngine {
             }
         }
         return counts
+    }
+}
+
+private extension PersonalizedRecommendationEngine {
+    func positiveRecommendations() -> [Recommendation] {
+        [
+            Recommendation(
+                title: "Capture what’s working",
+                reason: "You felt good - this is worth remembering.",
+                action: "Capture",
+                type: .reflection,
+                tags: ["reflection", "growth"],
+                emotionTargets: ["happy", "joyful", "peaceful", "grateful", "excited", "content", "proud"],
+                intensityRange: 1 ... 10
+            ),
+            Recommendation(
+                title: "Add to your Dopamine Menu",
+                reason: "Track what brings you joy so you can revisit it later.",
+                action: "Add to Dopamine Menu",
+                type: .action,
+                tags: ["dopamine", "joy", "habit"],
+                emotionTargets: ["happy", "joyful", "peaceful", "grateful", "excited", "content", "proud"],
+                intensityRange: 1 ... 10
+            ),
+            Recommendation(
+                title: "Journal this moment",
+                reason: "Understanding why you felt good helps you recreate it.",
+                action: "Journal",
+                type: .reflection,
+                tags: ["journal", "reflection"],
+                emotionTargets: ["happy", "joyful", "peaceful", "grateful", "excited", "content", "proud"],
+                intensityRange: 1 ... 10
+            )
+        ]
     }
 }
 

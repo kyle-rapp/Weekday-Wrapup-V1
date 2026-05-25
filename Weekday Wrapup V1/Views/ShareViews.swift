@@ -19,6 +19,8 @@ struct ShareOptionsView: View {
     @State private var isPostingToFeed = false
     @State private var showFeedAlert = false
     @State private var feedAlertText = ""
+    @State private var hideReactions = false
+    @State private var hideComments = false
 
     private var canSubmitFeedPost: Bool {
         let insight = checkInData.emotionalInsight.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -26,7 +28,10 @@ struct ShareOptionsView: View {
         let whoops = checkInData.whoopsText.trimmingCharacters(in: .whitespacesAndNewlines)
         let weekly = checkInData.weeklyGoal.trimmingCharacters(in: .whitespacesAndNewlines)
         let monthly = checkInData.monthlyGoal.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !emoji.isEmpty || !insight.isEmpty || !whoops.isEmpty || !weekly.isEmpty || !monthly.isEmpty
+        let gratitude = checkInData.gratitudeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lookForward = checkInData.lookForwardTo.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !emoji.isEmpty || !insight.isEmpty || !whoops.isEmpty
+            || !weekly.isEmpty || !monthly.isEmpty || !gratitude.isEmpty || !lookForward.isEmpty
     }
 
     private var hasNonEmptyProfileName: Bool {
@@ -56,6 +61,13 @@ struct ShareOptionsView: View {
             .padding(.vertical, 12)
 
             List {
+                Section(header: Text("Post privacy")) {
+                    Toggle("Hide reaction counts from others", isOn: $hideReactions)
+                        .font(.subheadline)
+                    Toggle("Disable comments", isOn: $hideComments)
+                        .font(.subheadline)
+                }
+
                 Section(header: Text("Share to")) {
                     ShareOptionRow(title: "Facebook", icon: "link.circle.fill", color: .blue) {
                         shareToFacebook()
@@ -134,7 +146,7 @@ struct ShareOptionsView: View {
         }
 
         guard canSubmitFeedPost else {
-            feedError = "Add an emoji, insight, whoops, or a goal before posting."
+            feedError = "Add an emoji, insight, whoops, gratitude, or something you're looking forward to before posting."
             feedAlertText = feedError ?? ""
             showFeedAlert = true
             return
@@ -143,6 +155,7 @@ struct ShareOptionsView: View {
         Task { @MainActor in
             isPostingToFeed = true
             defer { isPostingToFeed = false }
+            let previousEntries = firestore.wrapupHistoryEntries(forUserId: uid)
 
             let allowed = await firestore.canCreatePost(userId: uid)
             guard allowed else {
@@ -156,8 +169,11 @@ struct ShareOptionsView: View {
 
             let tip = checkInData.whatHelped ?? ""
             let extractedTags = HelpfulTagger.extractTags(from: tip)
+            var privacyCheckIn = checkInData
+            privacyCheckIn.hideReactions = hideReactions
+            privacyCheckIn.hideComments = hideComments
             let ok = await firestore.createPost(
-                from: checkInData,
+                from: privacyCheckIn,
                 authorId: uid,
                 authorName: trimmedName,
                 helpfulTags: extractedTags
@@ -176,26 +192,62 @@ struct ShareOptionsView: View {
                 UserDefaults.standard.removeObject(forKey: "draftShareEmotions")
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 await auth.recordSuccessfulWrapupPost()
+                let eventStream = EmotionalEventStreamService(firestore: firestore)
+                let beforeSnapshot: EmotionSnapshot? = {
+                    guard let previous = previousEntries.sorted(by: { $0.date > $1.date }).first else { return nil }
+                    return EmotionSnapshot(
+                        emotion: previous.firstSelectedEmotionLabel,
+                        intensity: Double(previous.intensity ?? 5)
+                    )
+                }()
+                let afterSnapshot = EmotionSnapshot(
+                    emotion: checkInData.firstSelectedEmotionLabel,
+                    intensity: Double(checkInData.intensity ?? 5)
+                )
+                await eventStream.logEmotionCheckIn(
+                    userId: uid,
+                    source: .checkInPopup,
+                    emotionBefore: beforeSnapshot,
+                    emotionAfter: afterSnapshot,
+                    tags: checkInData.helpfulTags ?? [],
+                    metadata: [
+                        "flow": "share_post",
+                        "visibility": checkInData.visibility.rawValue
+                    ]
+                )
                 let prefs = await firestore.fetchUserPreferences(userId: uid)
+                let reflectionTags = await firestore.fetchPositiveReflectionTags(userId: uid)
                 let combinedText = [
                     checkInData.emotionalInsight,
+                    checkInData.gratitudeText,
                     checkInData.whoopsText,
+                    checkInData.lookForwardTo,
                     checkInData.weeklyGoal,
                     checkInData.monthlyGoal
                 ]
                 .joined(separator: " ")
-                let bundle = DailyCheckInEngine.buildBundle(
+                let intensity = checkInData.intensity ?? 5
+                let context = EmotionContext(
                     emotion: checkInData.firstSelectedEmotionLabel,
-                    intensity: checkInData.intensity ?? 5,
+                    intensity: intensity,
                     journalText: combinedText,
-                    helpfulTags: Array(Set((checkInData.helpfulTags ?? []) + extractedTags)).sorted(),
+                    helpfulTags: Array(Set((checkInData.helpfulTags ?? []) + extractedTags + reflectionTags)).sorted(),
                     userPreferences: prefs,
-                    weather: nil
+                    history: firestore.wrapupHistoryEntries(forUserId: uid),
+                    weather: .neutral,
+                    stressors: prefs?.topStressors ?? []
                 )
+                let personalization = EmotionPersonalizationEngine()
+                let bundle = personalization.buildCheckInBundle(context: context)
                 isShowing = false
                 feedError = nil
                 tabRouter.completePostToFeedFlow()
-                tabRouter.presentDailyRecommendations(bundle)
+                // Only show for negative emotions (always) or positive emotions with intensity ≥ 5
+                let polarity = personalization.emotionPolarity(for: checkInData.firstSelectedEmotionLabel)
+                let shouldShowPopup = polarity == .negative || polarity == .unknown || intensity >= 5
+                if shouldShowPopup {
+                    tabRouter.presentDailyRecommendations(bundle)
+                }
             } else {
                 let msg = firestore.errorMessage ?? "Could not post to the feed."
                 print("[ERROR] Firestore post create failed: \(msg)")

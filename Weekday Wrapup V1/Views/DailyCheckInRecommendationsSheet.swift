@@ -1,7 +1,9 @@
 import SwiftUI
 
 /// FILE: Views/DailyCheckInRecommendationsSheet.swift
-/// Shown after a successful Share → Feed post with immediate, habit, and resource lanes.
+/// Shown after a successful Share → Feed post.
+/// Negative emotions: one low-effort grounding suggestion.
+/// Positive emotions (intensity ≥ 5): reflection + Dopamine Menu nudge.
 
 struct DailyRecommendationsPresentation: Identifiable, Equatable {
     let id = UUID()
@@ -18,10 +20,19 @@ struct DailyCheckInRecommendationsSheet: View {
 
     @EnvironmentObject private var auth: AuthManager
     @EnvironmentObject private var firestore: FirestoreManager
-    @State private var recommendationVotes: [UUID: Bool] = [:]
-    @State private var resourceVote: Bool?
+    @EnvironmentObject private var tabRouter: TabRouter
+    @State private var copingFeedback: Bool?
     @State private var safetyDismissed = false
     @State private var therapyResourcesDismissed = false
+    @State private var whatHelpedText = ""
+    @State private var addedToDopamineMenu = false
+    @State private var isSavingPositiveReflection = false
+
+    private var emotionPolarity: EmotionPolarity {
+        DailyCheckInEngine.polarity(for: bundle.checkInEmotion)
+    }
+
+    private var isPositiveEmotion: Bool { emotionPolarity == .positive }
 
     private var needsSafetyPanel: Bool {
         EmotionalSafetySignals.signalsSupport(
@@ -34,7 +45,7 @@ struct DailyCheckInRecommendationsSheet: View {
 
     private var safetyResources: [ResourceRecommendation] {
         RecommendationResourceEngine.rank(
-            postText: bundle.immediate.reason + " " + bundle.personalized.reason,
+            postText: bundle.immediate.reason,
             emotionTags: [bundle.checkInEmotion],
             stressors: []
         )
@@ -44,8 +55,7 @@ struct DailyCheckInRecommendationsSheet: View {
         let blob = [
             bundle.sourceText,
             bundle.analysis.keywords.joined(separator: " "),
-            bundle.immediate.reason,
-            bundle.personalized.reason
+            bundle.immediate.reason
         ].joined(separator: " ")
         return TherapyResourceEngine.matchResources(
             text: blob,
@@ -53,8 +63,16 @@ struct DailyCheckInRecommendationsSheet: View {
         )
     }
 
+    private var contextualResources: [ContextualCheckInResource] {
+        CheckInContextualResources.contextualResources(
+            emotion: bundle.checkInEmotion,
+            sourceText: bundle.sourceText
+        )
+    }
+
     private var showCrisisLine: Bool {
-        let text = [bundle.sourceText, bundle.analysis.emotionalState, bundle.analysis.keywords.joined(separator: " ")].joined(separator: " ")
+        let text = [bundle.sourceText, bundle.analysis.emotionalState,
+                    bundle.analysis.keywords.joined(separator: " ")].joined(separator: " ")
         return EmotionalSafetySignals.containsCrisisLanguage(text)
     }
 
@@ -62,128 +80,123 @@ struct DailyCheckInRecommendationsSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    Text("Here’s something that may help right now")
-                        .font(.title3.bold())
-                        .foregroundStyle(AppTheme.colors.textPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    if needsSafetyPanel && !safetyDismissed {
-                        EmotionalSafetySupportCard(resources: safetyResources, showCrisisLine: showCrisisLine) {
-                            safetyDismissed = true
-                        }
+                    if isPositiveEmotion {
+                        positiveContent
+                    } else {
+                        negativeContent
                     }
-
-                    analysisStrip
-
-                    RecommendationCardView(
-                        recommendation: bundle.immediate,
-                        selectedFeedback: recommendationVotes[bundle.immediate.id],
-                        onStart: {
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        },
-                        onFeedback: { helpful in
-                            Task { await sendRecFeedback(bundle.immediate, helpful: helpful) }
-                        }
-                    )
-
-                    RecommendationCardView(
-                        recommendation: bundle.personalized,
-                        selectedFeedback: recommendationVotes[bundle.personalized.id],
-                        onStart: {
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        },
-                        onFeedback: { helpful in
-                            Task { await sendRecFeedback(bundle.personalized, helpful: helpful) }
-                        }
-                    )
-
-                    if !therapyResourcesDismissed, !matchedTherapyResources.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Text("Helpful resources")
-                                    .font(.headline)
-                                Spacer(minLength: 8)
-                                Button("Dismiss") {
-                                    therapyResourcesDismissed = true
-                                }
-                                .font(.caption.weight(.semibold))
-                                .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                            }
-                            ForEach(matchedTherapyResources) { resource in
-                                ResourceCardView(resource: resource)
-                            }
-                        }
-                    }
-
-                    resourceBlock
                 }
                 .padding(20)
             }
             .background(AppTheme.colors.secondaryBackground.ignoresSafeArea())
-            .navigationTitle("After your check-in")
+            .navigationTitle(isPositiveEmotion ? "Reflect on today" : "A gentle nudge")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { onDismiss() }
+                    Button("Done") {
+                        Task { await closeSheet() }
+                    }
                         .font(.body.weight(.semibold))
                 }
             }
         }
     }
 
-    private var analysisStrip: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Snapshot")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.colors.textSecondary)
-            Text("State: \(bundle.analysis.emotionalState.replacingOccurrences(of: "_", with: " "))")
-                .font(.subheadline.weight(.medium))
-            if !bundle.analysis.keywords.isEmpty {
-                Text("Keywords: \(bundle.analysis.keywords.prefix(5).joined(separator: ", "))")
-                    .font(.caption)
+    // MARK: - Negative Emotion Content
+
+    private var negativeContent: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Something that might help right now")
+                    .font(.title3.bold())
+                    .foregroundStyle(AppTheme.colors.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("One small thing. No pressure at all.")
+                    .font(.subheadline)
                     .foregroundStyle(AppTheme.colors.textSecondary)
             }
-            Text("Trend: \(bundle.analysis.trend.rawValue)")
-                .font(.caption)
-                .foregroundStyle(AppTheme.colors.textSecondary)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14).fill(AppTheme.colors.mist.opacity(0.35)))
-    }
 
-    private var resourceBlock: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Deep resource", systemImage: "link.circle.fill")
-                .font(.headline)
-                .foregroundStyle(AppTheme.colors.textPrimary)
-
-            if let url = URL(string: bundle.resource.url) {
-                Link(destination: url) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(bundle.resource.title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
-                        Text(bundle.resource.summary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text("Open link")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.blue)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if needsSafetyPanel && !safetyDismissed {
+                EmotionalSafetySupportCard(
+                    resources: safetyResources,
+                    showCrisisLine: showCrisisLine
+                ) {
+                    safetyDismissed = true
                 }
-                .buttonStyle(.plain)
             }
 
-            ResourceFeedbackRow(
-                selectedFeedback: resourceVote,
-                onThumb: { helpful in
-                    Task { await sendResourceFeedback(helpful: helpful) }
+            copingCard
+
+            if !contextualResources.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("You might also appreciate")
+                        .font(.headline)
+                        .foregroundStyle(AppTheme.colors.textPrimary)
+                    ForEach(contextualResources) { resource in
+                        ContextualResourceCardView(resource: resource)
+                    }
                 }
-            )
+            }
+
+            if !therapyResourcesDismissed, !matchedTherapyResources.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("Helpful resources")
+                            .font(.headline)
+                        Spacer(minLength: 8)
+                        Button("Dismiss") {
+                            therapyResourcesDismissed = true
+                        }
+                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    }
+                    ForEach(matchedTherapyResources) { resource in
+                        ResourceCardView(resource: resource)
+                    }
+                }
+            }
+        }
+    }
+
+    private var copingCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(bundle.immediate.title)
+                .font(.headline)
+                .foregroundStyle(AppTheme.colors.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(bundle.immediate.reason)
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 16) {
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    copingFeedback = true
+                } label: {
+                    Image(systemName: "hand.thumbsup.fill")
+                        .font(.title3)
+                        .foregroundStyle(copingFeedback == true ? Color.green : Color.gray)
+                        .scaleEffect(copingFeedback == true ? 1.2 : 1.0)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("This helped")
+
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    copingFeedback = false
+                } label: {
+                    Image(systemName: "hand.thumbsdown.fill")
+                        .font(.title3)
+                        .foregroundStyle(copingFeedback == false ? Color.red : Color.gray)
+                        .scaleEffect(copingFeedback == false ? 1.2 : 1.0)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Not for me")
+            }
+            .animation(.easeInOut, value: copingFeedback)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -197,111 +210,175 @@ struct DailyCheckInRecommendationsSheet: View {
         )
     }
 
-    private func sendRecFeedback(_ rec: Recommendation, helpful: Bool) async {
-        guard let uid = auth.currentUser?.id else { return }
+    // MARK: - Positive Emotion Content
 
-        let current = recommendationVotes[rec.id]
-        let newValue: Bool? = (current == helpful) ? nil : helpful
-
-        await MainActor.run {
-            if newValue == nil {
-                recommendationVotes.removeValue(forKey: rec.id)
-            } else {
-                recommendationVotes[rec.id] = newValue
+    private var positiveContent: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("What helped you feel this way today?")
+                    .font(.title3.bold())
+                    .foregroundStyle(AppTheme.colors.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Capturing what works helps you come back to it on harder days.")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-        }
 
-        guard let v = newValue else { return }
+            reflectionInputCard
 
-        do {
-            AppLogger.log("[RECOMMENDATION] Daily sheet feedback rec=\(rec.id.uuidString) helpful=\(v)")
-            try await firestore.submitRecommendationFeedback(
-                userId: uid,
-                recommendationId: rec.id.uuidString,
-                title: rec.title,
-                reason: rec.reason,
-                type: rec.type,
-                helpful: v
-            )
-        } catch {
-            AppLogger.error("Daily recommendation feedback failed: \(error.localizedDescription)")
-            await MainActor.run {
-                if let current {
-                    recommendationVotes[rec.id] = current
-                } else {
-                    recommendationVotes.removeValue(forKey: rec.id)
+            if !contextualResources.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Worth keeping nearby")
+                        .font(.headline)
+                        .foregroundStyle(AppTheme.colors.textPrimary)
+                    ForEach(contextualResources) { resource in
+                        ContextualResourceCardView(resource: resource)
+                    }
                 }
             }
+
+            dopamineMenuPromptCard
         }
     }
 
-    private func sendResourceFeedback(helpful: Bool) async {
+    private var reflectionInputCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Jot it down (optional)")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.colors.textPrimary)
+
+            TextField(
+                "e.g. a good walk, sunlight, a real conversation…",
+                text: $whatHelpedText,
+                axis: .vertical
+            )
+            .textFieldStyle(.roundedBorder)
+            .lineLimit(2...4)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(AppTheme.colors.background)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+        )
+    }
+
+    private var dopamineMenuPromptCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Add to your Dopamine Menu", systemImage: "sparkles")
+                .font(.headline)
+                .foregroundStyle(AppTheme.colors.textPrimary)
+
+            Text("You can add this in your Dopamine Menu in the Grow tab.")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if addedToDopamineMenu {
+                Label("Opening Grow tab…", systemImage: "checkmark.circle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
+                    .padding(.top, 4)
+            } else {
+                Button {
+                    Task { await openDopamineMenu() }
+                } label: {
+                    Text("Open Dopamine Menu")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(AppTheme.colors.ocean.opacity(0.12))
+                        .foregroundStyle(AppTheme.colors.ocean)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(isSavingPositiveReflection)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(AppTheme.colors.background)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+        )
+        .animation(.easeInOut, value: addedToDopamineMenu)
+    }
+
+    private func closeSheet() async {
+        await savePositiveReflectionIfNeeded()
+        await MainActor.run {
+            onDismiss()
+        }
+    }
+
+    private func openDopamineMenu() async {
+        await savePositiveReflectionIfNeeded()
+        await MainActor.run {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            addedToDopamineMenu = true
+            onDismiss()
+            tabRouter.openDopamineMenuInGrow()
+        }
+    }
+
+    private func savePositiveReflectionIfNeeded() async {
+        guard isPositiveEmotion else { return }
+        let trimmed = whatHelpedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard !isSavingPositiveReflection else { return }
         guard let uid = auth.currentUser?.id else { return }
 
-        let current = resourceVote
-        let newValue: Bool? = (current == helpful) ? nil : helpful
-
         await MainActor.run {
-            resourceVote = newValue
+            isSavingPositiveReflection = true
+        }
+        defer {
+            Task { @MainActor in
+                isSavingPositiveReflection = false
+            }
         }
 
-        guard let v = newValue else { return }
-
+        let tags = EmotionAnalyticsService.extractHelpfulTags(from: trimmed)
         do {
-            AppLogger.log("[RECOMMENDATION] Resource feedback resource=\(bundle.resource.id) helpful=\(v)")
-            try await firestore.submitRecommendationFeedback(
+            try await firestore.savePositiveReflection(
                 userId: uid,
-                recommendationId: bundle.resource.id,
-                title: bundle.resource.title,
-                reason: bundle.resource.summary,
-                type: .reflection,
-                helpful: v
+                emotion: bundle.checkInEmotion,
+                text: trimmed,
+                tags: tags
+            )
+            let stream = EmotionalEventStreamService(firestore: firestore)
+            let before = EmotionSnapshot(
+                emotion: bundle.checkInEmotion,
+                intensity: Double(bundle.intensity)
+            )
+            await stream.logEvent(
+                EmotionalEvent(
+                    eventId: "event_\(Int(Date().timeIntervalSince1970 * 1000))_reflection_\(StableId.make(prefix: "reflection", title: trimmed, category: "positive_reflection"))",
+                    userId: uid,
+                    timestamp: Date(),
+                    eventType: .postInteraction,
+                    emotionBefore: before,
+                    emotionAfter: nil,
+                    actionType: .reflect,
+                    itemId: nil,
+                    itemTitle: "positive_reflection",
+                    source: .checkInPopup,
+                    didHelp: nil,
+                    intensityChange: nil,
+                    tags: tags,
+                    metadata: ["flow": "daily_checkin_sheet"]
+                )
             )
         } catch {
-            AppLogger.error("Resource feedback failed: \(error.localizedDescription)")
-            await MainActor.run {
-                resourceVote = current
-            }
+            AppLogger.error("savePositiveReflectionIfNeeded failed: \(error.localizedDescription)")
         }
-    }
-}
-
-// MARK: - Resource thumbs (same UX as cards)
-
-private struct ResourceFeedbackRow: View {
-    var selectedFeedback: Bool?
-    var onThumb: (Bool) -> Void
-
-    var body: some View {
-        let isUp = selectedFeedback == true
-        let isDown = selectedFeedback == false
-
-        HStack(spacing: 20) {
-            Button {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                onThumb(true)
-            } label: {
-                Image(systemName: "hand.thumbsup.fill")
-                    .font(.title3)
-                    .foregroundStyle(isUp ? Color.green : Color.gray)
-                    .scaleEffect(isUp ? 1.2 : 1.0)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Helpful")
-
-            Button {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                onThumb(false)
-            } label: {
-                Image(systemName: "hand.thumbsdown.fill")
-                    .font(.title3)
-                    .foregroundStyle(isDown ? Color.red : Color.gray)
-                    .scaleEffect(isDown ? 1.2 : 1.0)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Not helpful")
-        }
-        .padding(.top, 4)
-        .animation(.easeInOut, value: selectedFeedback)
     }
 }

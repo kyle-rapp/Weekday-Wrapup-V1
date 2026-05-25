@@ -34,7 +34,7 @@ final class OutdoorSuggestionsManager: NSObject, ObservableObject {
     private func refresh(from location: CLLocation) async {
         let coord = location.coordinate
         await fetchWeather(for: location)
-        await searchPark(coord: coord)
+        await searchNearbySuggestion(coord: coord)
     }
 
     private func fetchWeather(for location: CLLocation) async {
@@ -59,9 +59,27 @@ final class OutdoorSuggestionsManager: NSObject, ObservableObject {
         }
     }
 
-    private func searchPark(coord: CLLocationCoordinate2D) async {
+    private enum NearbySuggestionKind {
+        case park
+        case museum
+    }
+
+    private func searchNearbySuggestion(coord: CLLocationCoordinate2D) async {
+        if weatherHint == .rainy {
+            if await searchPlace(coord: coord, query: "museum", kind: .museum) { return }
+            if await searchPlace(coord: coord, query: "art museum", kind: .museum) { return }
+            if await searchPlace(coord: coord, query: "park", kind: .park) { return }
+            nearbyLine = nil
+            return
+        }
+        if await searchPlace(coord: coord, query: "park", kind: .park) { return }
+        if await searchPlace(coord: coord, query: "museum", kind: .museum) { return }
+        nearbyLine = nil
+    }
+
+    private func searchPlace(coord: CLLocationCoordinate2D, query: String, kind: NearbySuggestionKind) async -> Bool {
         let request = MKLocalSearch.Request()
-        request.naturalLanguageQuery = "park"
+        request.naturalLanguageQuery = query
         request.region = MKCoordinateRegion(
             center: coord,
             latitudinalMeters: 8000,
@@ -70,18 +88,33 @@ final class OutdoorSuggestionsManager: NSObject, ObservableObject {
         do {
             let response = try await MKLocalSearch(request: request).start()
             guard let item = response.mapItems.first else {
-                nearbyLine = nil
-                return
+                return false
             }
             let name = item.name ?? "Park"
             let here = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
             let distanceMeters = item.placemark.location.map { here.distance(from: $0) } ?? 0
             let miles = distanceMeters * 0.000_621_371
             let milesStr = miles < 0.1 ? String(format: "%.2f mi", max(miles, 0.01)) : String(format: "%.1f mi", miles)
-            nearbyLine = "Nearby: \(name) (\(milesStr))"
+            nearbyLine = activityCopy(for: kind, placeName: name, milesText: milesStr)
+            return true
         } catch {
-            nearbyLine = nil
             print("⚠️ Local search: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func activityCopy(for kind: NearbySuggestionKind, placeName: String, milesText: String) -> String {
+        switch kind {
+        case .park:
+            if weatherHint == .sunny {
+                return "How about a leisurely walk in \(placeName) (\(milesText))?"
+            }
+            return "A gentle stroll through \(placeName) (\(milesText)) could be a nice reset."
+        case .museum:
+            if weatherHint == .rainy {
+                return "Since it may be rainy, maybe try a quiet visit to \(placeName) (\(milesText))."
+            }
+            return "A calming reset at \(placeName) (\(milesText)) could feel good today."
         }
     }
 }

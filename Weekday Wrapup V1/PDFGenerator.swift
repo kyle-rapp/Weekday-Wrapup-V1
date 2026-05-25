@@ -68,6 +68,15 @@ enum PDFGenerator {
             )
             currentY += 108
 
+            // 5b. Gratitude
+            drawBox(
+                in: CGRect(x: margin, y: currentY, width: pageSize.width - 2 * margin, height: 72),
+                title: "Today I'm grateful for",
+                content: checkInData.gratitudeText.isEmpty ? "—" : checkInData.gratitudeText,
+                style: [.font: UIFont.systemFont(ofSize: 14), .foregroundColor: UIColor.label]
+            )
+            currentY += 88
+
             // 6. Whoops / Poops side by side
             let halfWidth = (pageSize.width - 3 * margin) / 2
             drawBox(
@@ -84,20 +93,11 @@ enum PDFGenerator {
             )
             currentY += 88
 
-            // 7. Weekly goal
+            // 7. Looking forward
             drawBox(
                 in: CGRect(x: margin, y: currentY, width: pageSize.width - 2 * margin, height: 56),
-                title: "Weekly Goal",
-                content: checkInData.weeklyGoal.isEmpty ? "—" : checkInData.weeklyGoal,
-                style: [.font: UIFont.systemFont(ofSize: 14), .foregroundColor: UIColor.label]
-            )
-            currentY += 72
-
-            // 8. Monthly goal
-            drawBox(
-                in: CGRect(x: margin, y: currentY, width: pageSize.width - 2 * margin, height: 56),
-                title: "Monthly Goal",
-                content: checkInData.monthlyGoal.isEmpty ? "—" : checkInData.monthlyGoal,
+                title: "Soon I look forward to",
+                content: checkInData.lookForwardTo.isEmpty ? "—" : checkInData.lookForwardTo,
                 style: [.font: UIFont.systemFont(ofSize: 14), .foregroundColor: UIColor.label]
             )
         }

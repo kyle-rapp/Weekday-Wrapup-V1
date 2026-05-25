@@ -14,16 +14,16 @@ struct ContentView: View {
     @EnvironmentObject private var emotionRouter: EmotionRouter
 
     // State variables
-    @State private var showProfileCreation = true
+    @State private var showProfileCreation = false
     @State private var userName = ""
     @State private var profileImage: Image?
     @State private var astrologySign = ""
     @State private var weeklyEmoji = ""
     @State private var emotionalInsight = ""
+    @State private var gratitudeText = ""
     @State private var whoopsText = ""
     @State private var poopsText = ""
-    @State private var weeklyGoal = ""
-    @State private var monthlyGoal = ""
+    @State private var lookForwardTo = ""
     @State private var postTitle = ""
     @State private var capturedImage: UIImage?
     @State private var visibility: PostVisibility = .public
@@ -63,10 +63,10 @@ struct ContentView: View {
             checkInImage: capturedImage,
             selectedEmotions: Set(emotionRouter.shareEmotions),
             emotionalInsight: emotionalInsight,
+            gratitudeText: gratitudeText,
             whoopsText: whoopsText,
             poopsText: poopsText,
-            weeklyGoal: weeklyGoal,
-            monthlyGoal: monthlyGoal,
+            lookForwardTo: lookForwardTo,
             profileImage: profileImage,
             visibility: visibility,
             intensity: intensity,
@@ -259,7 +259,7 @@ struct ContentView: View {
                     ScrollView {
                         VStack(spacing: 32) {
                         // Camera section
-                        SectionContainer {
+                        SectionContainer(tint: AppTheme.colors.ocean.opacity(0.05)) {
                             VStack(alignment: .leading, spacing: 12) {
                                 SectionHeader(title: "Capture Your Moment", icon: "camera.fill", color: AppTheme.colors.ocean)
                                 
@@ -270,7 +270,7 @@ struct ContentView: View {
                         }
                         
                         // Feeling wheel section
-                        SectionContainer {
+                        SectionContainer(tint: AppTheme.colors.moss.opacity(0.05)) {
                             VStack(spacing: 8) {
                                 FeelingWheelView(
                                     selectedEmotions: Binding(
@@ -365,63 +365,76 @@ struct ContentView: View {
                         }
                         
                         // Input sections
-                        SectionContainer {
-                            VStack(spacing: 24) {
+                        SectionContainer(tint: AppTheme.colors.sage.opacity(0.06)) {
+                            VStack(spacing: 28) {
                                 SectionHeader(title: "Your Reflections", icon: "pencil.line", color: AppTheme.colors.bark)
-                                
-                                InsightInputView(text: $emotionalInsight)
+
+                                reflectionCard {
+                                    InsightInputView(text: $emotionalInsight)
+                                }
 
                                 if !emotionalInsight.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    reflectionCard {
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            Label("Insight", systemImage: "sparkles")
+                                                .font(.headline)
+                                                .foregroundColor(AppTheme.colors.textPrimary)
+                                            Text(generateInsight(from: emotionalInsight))
+                                                .font(.subheadline)
+                                                .foregroundColor(.secondary)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                }
+
+                                reflectionCard {
+                                    GratitudeInputView(text: $gratitudeText)
+                                }
+
+                                HStack(alignment: .top, spacing: 16) {
+                                    reflectionCard {
+                                        WhoopsInputView(text: $whoopsText)
+                                    }
+                                    reflectionCard {
+                                        PoopsInputView(text: $poopsText)
+                                    }
+                                }
+
+                                reflectionCard {
+                                    LookForwardInputView(text: $lookForwardTo)
+                                }
+
+                                reflectionCard {
                                     VStack(alignment: .leading, spacing: 8) {
-                                        Text("Insight")
+                                        Label("Post title", systemImage: "textformat")
                                             .font(.headline)
+                                            .foregroundStyle(AppTheme.colors.textPrimary)
+                                        TextField("Give your post a title...", text: $postTitle)
+                                            .textFieldStyle(.roundedBorder)
+                                    }
+                                }
+
+                                reflectionCard {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        Label("Share to", systemImage: "lock.fill")
+                                            .font(.subheadline.weight(.semibold))
                                             .foregroundColor(AppTheme.colors.textPrimary)
-                                        Text(generateInsight(from: emotionalInsight))
-                                            .font(.subheadline)
+                                        Picker("Share to", selection: $visibility) {
+                                            Text("Public").tag(PostVisibility.public)
+                                            Text("Friends").tag(PostVisibility.friends)
+                                            Text("Group").tag(PostVisibility.groups)
+                                            Text("Only me").tag(PostVisibility.private)
+                                        }
+                                        .pickerStyle(.segmented)
+                                        Text(visibilityFootnote)
+                                            .font(.caption)
                                             .foregroundColor(.secondary)
                                             .fixedSize(horizontal: false, vertical: true)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                }
 
-                                // Whoops and Poops row
-                                HStack(spacing: 16) {
-                                    WhoopsInputView(text: $whoopsText)
-                                    PoopsInputView(text: $poopsText)
-                                }
-                                
-                                // Goals column
-                                VStack(spacing: 16) {
-                                    WeeklyGoalInputView(text: $weeklyGoal)
-                                    MonthlyGoalInputView(text: $monthlyGoal)
-                                }
-
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("Post title")
-                                        .font(.headline)
-                                        .foregroundStyle(AppTheme.colors.textPrimary)
-                                    TextField("Give your post a title...", text: $postTitle)
-                                        .textFieldStyle(.roundedBorder)
-                                }
-
-                                VStack(alignment: .leading, spacing: 10) {
-                                    Label("Share to", systemImage: "lock.fill")
-                                        .font(.subheadline.weight(.semibold))
-                                        .foregroundColor(AppTheme.colors.textPrimary)
-                                    Picker("Share to", selection: $visibility) {
-                                        Text("Public").tag(PostVisibility.public)
-                                        Text("Friends").tag(PostVisibility.friends)
-                                        Text("Group").tag(PostVisibility.groups)
-                                        Text("Only me").tag(PostVisibility.private)
-                                    }
-                                    .pickerStyle(.segmented)
-                                    Text(visibilityFootnote)
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-
-                                    if visibility == .groups {
-                                        groupShareSection
+                                        if visibility == .groups {
+                                            groupShareSection
+                                        }
                                     }
                                 }
                             }
@@ -439,16 +452,22 @@ struct ContentView: View {
             ProfileCreationView(isPresented: $showProfileCreation,
                               userName: $userName,
                               profileImage: $profileImage,
-                              astrologySign: $astrologySign)
+                              astrologySign: $astrologySign) {
+                await persistProfileOnboardingIfNeeded()
+            }
         }
         .onAppear {
             loadDraftEmotionsIfNeeded()
+            Task { await refreshProfilePresentationState() }
             if isUITestMode, weeklyEmoji.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 weeklyEmoji = "✨"
                 if emotionalInsight.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     emotionalInsight = "UI test check-in"
                 }
             }
+        }
+        .onChange(of: auth.currentUser?.id) { _, _ in
+            Task { await refreshProfilePresentationState() }
         }
         .onChange(of: visibility) { _, newVal in
             if newVal == .groups, selectedGroupId == nil, let first = firestore.myGroups.first {
@@ -462,23 +481,89 @@ struct ContentView: View {
             }
         }
     }
+
+    private func refreshProfilePresentationState() async {
+        guard let uid = auth.currentUser?.id else {
+            await MainActor.run { showProfileCreation = false }
+            return
+        }
+        let profile = await firestore.fetchUserProfile(userId: uid)
+        let rootName = auth.currentUser?.name ?? ""
+        let resolvedName = (profile?.name?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            ? profile?.name ?? rootName
+            : rootName
+        let resolvedZodiac = profile?.zodiacSign ?? auth.currentUser?.zodiacSign ?? ""
+        let hasImage = (profile?.hasProfileImage ?? auth.currentUser?.hasProfileImage ?? false)
+            || !((profile?.profileImageURL ?? auth.currentUser?.profileImageURL ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        let isComplete = !resolvedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !resolvedZodiac.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && hasImage
+
+        await MainActor.run {
+            userName = resolvedName
+            astrologySign = resolvedZodiac
+            showProfileCreation = !isComplete
+        }
+    }
+
+    private func persistProfileOnboardingIfNeeded() async {
+        guard let uid = auth.currentUser?.id else { return }
+        let cleanName = userName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanZodiac = astrologySign.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty, !cleanZodiac.isEmpty else { return }
+        do {
+            try await firestore.saveOnboardingProfile(
+                userId: uid,
+                displayName: cleanName,
+                zodiacSign: cleanZodiac,
+                hasProfileImage: profileImage != nil || (auth.currentUser?.hasProfileImage ?? false)
+            )
+        } catch {
+            AppLogger.error("persistProfileOnboardingIfNeeded failed: \(error.localizedDescription)")
+        }
+    }
+
+    @ViewBuilder
+    private func reflectionCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(AppTheme.colors.secondaryBackground.opacity(0.65))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.primary.opacity(0.04), lineWidth: 1)
+            )
+    }
 }
 
 // Helper Views
 struct SectionContainer<Content: View>: View {
+    let tint: Color
     let content: Content
-    
-    init(@ViewBuilder content: () -> Content) {
+
+    init(tint: Color = .clear, @ViewBuilder content: () -> Content) {
+        self.tint = tint
         self.content = content()
     }
-    
+
     var body: some View {
         content
             .padding(20)
             .background(
-                RoundedRectangle(cornerRadius: 16)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .fill(AppTheme.colors.background)
-                    .shadow(color: AppTheme.colors.bark.opacity(0.05), radius: 8, y: 2)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(tint)
+                    )
+                    .shadow(color: AppTheme.colors.bark.opacity(0.06), radius: 10, y: 3)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.primary.opacity(0.04), lineWidth: 1)
             )
             .padding(.horizontal, 16)
     }

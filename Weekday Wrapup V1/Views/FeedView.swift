@@ -12,9 +12,13 @@ struct FeedView: View {
     @EnvironmentObject private var auth: AuthManager
     @State private var showFirestoreAlert = false
     @State private var firestoreAlertText = ""
+    @State private var lastFirestoreAlertText = ""
     /// Presented above the scroll view so the dimming layer isn’t clipped.
     @State private var expandedReactionPostId: String?
     @State private var feedPresentCreateGroup = false
+    @State private var cachedSoftSocialNudgeLine: String?
+    @State private var cachedWeeklyHelpfulTagsLine: String?
+    @State private var feedSummarySignature = ""
 
     private var palettePost: FeedPost? {
         guard let id = expandedReactionPostId else { return nil }
@@ -49,7 +53,7 @@ struct FeedView: View {
         ZStack {
             ScrollView {
                 LazyVStack(spacing: 24) {
-                    if let nudge = softSocialNudgeLine {
+                    if let nudge = cachedSoftSocialNudgeLine {
                         Text(nudge)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(AppTheme.colors.textSecondary)
@@ -62,7 +66,7 @@ struct FeedView: View {
                             )
                     }
 
-                    if let line = weeklyHelpfulTagsLine {
+                    if let line = cachedWeeklyHelpfulTagsLine {
                         Text(line)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -104,57 +108,77 @@ struct FeedView: View {
         .toolbar {
             if auth.currentUser != nil {
                 ToolbarItem(placement: .principal) {
-                    ZStack {
+                    HStack {
+                        NavigationLink {
+                            FindFriendsView()
+                        } label: {
+                            VStack(spacing: 2) {
+                                Image(systemName: "person.2.fill")
+                                    .font(.system(size: 16, weight: .semibold))
+                                Text("Friends")
+                                    .font(.caption2)
+                            }
+                            .frame(width: 80)
+                            .foregroundStyle(.primary)
+                        }
+                        .buttonStyle(.plain)
+
+                        Spacer()
+
                         Text("Feed")
                             .font(.headline.weight(.semibold))
-                            .frame(maxWidth: .infinity, alignment: .center)
 
-                        HStack {
-                            NavigationLink {
-                                FindFriendsView()
-                            } label: {
-                                Text("Find Friends")
-                                    .font(.subheadline.weight(.medium))
-                                    .frame(width: 108, alignment: .leading)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Find friends")
+                        Spacer()
 
-                            Spacer()
-
-                            NavigationLink {
-                                GroupsView()
-                            } label: {
+                        NavigationLink {
+                            GroupsView()
+                        } label: {
+                            VStack(spacing: 2) {
+                                Image(systemName: "person.3.fill")
+                                    .font(.system(size: 16, weight: .semibold))
                                 Text("Groups")
-                                    .font(.subheadline.weight(.medium))
-                                    .frame(width: 108, alignment: .trailing)
+                                    .font(.caption2)
                             }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                Button {
-                                    feedPresentCreateGroup = true
-                                } label: {
-                                    Label("Create Group", systemImage: "plus.circle")
-                                }
+                            .frame(width: 80)
+                            .foregroundStyle(.primary)
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button {
+                                feedPresentCreateGroup = true
+                            } label: {
+                                Label("Create Group", systemImage: "plus.circle")
                             }
-                            .accessibilityLabel("Groups")
                         }
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 2)
                 }
             }
         }
         .navigationBarBackButtonHidden(false)
+        .onAppear {
+            recomputeFeedSummariesIfNeeded()
+        }
+        .onChange(of: firestore.posts.count) { _, _ in
+            recomputeFeedSummariesIfNeeded()
+        }
+        .onChange(of: firestore.followingIds) { _, _ in
+            recomputeFeedSummariesIfNeeded()
+        }
         .onChange(of: firestore.errorMessage) { _, message in
             guard let message, !message.isEmpty else { return }
+            if showFirestoreAlert, message == lastFirestoreAlertText {
+                firestore.clearErrorMessage()
+                return
+            }
             firestoreAlertText = message
+            lastFirestoreAlertText = message
             showFirestoreAlert = true
             firestore.clearErrorMessage()
         }
         .alert("Something went wrong", isPresented: $showFirestoreAlert) {
             Button("OK", role: .cancel) {
                 showFirestoreAlert = false
+                firestoreAlertText = ""
             }
         } message: {
             Text(firestoreAlertText)
@@ -166,6 +190,18 @@ struct FeedView: View {
             .environmentObject(firestore)
             .environmentObject(auth)
         }
+    }
+
+    private func recomputeFeedSummariesIfNeeded() {
+        let posts = firestore.posts
+        let signature = posts
+            .map { "\($0.id)|\($0.authorId)|\($0.intensity ?? -1)|\($0.primaryEmotion)" }
+            .joined(separator: ";")
+            + "|f:\(firestore.followingIds.sorted().joined(separator: ","))"
+        guard signature != feedSummarySignature else { return }
+        feedSummarySignature = signature
+        cachedSoftSocialNudgeLine = softSocialNudgeLine
+        cachedWeeklyHelpfulTagsLine = weeklyHelpfulTagsLine
     }
 
     @ViewBuilder
@@ -240,7 +276,7 @@ struct FeedPostCard: View {
 
     private var uid: String? { auth.currentUser?.id }
     private var livePost: FeedPost {
-        firestore.posts.first(where: { $0.id == post.id }) ?? post
+        post
     }
     private var isFollowingAuthor: Bool {
         firestore.isFollowing(livePost.authorId)
@@ -439,11 +475,16 @@ struct FeedPostCard: View {
                 }
             }
 
-            FeedReactionRow(
-                livePost: livePost,
-                uid: uid,
-                onOpenPalette: { expandedReactionPostId = post.id }
-            )
+            let isAuthor = uid == livePost.authorId
+            let canShowReactions = !livePost.hideReactions || isAuthor
+            if canShowReactions {
+                FeedReactionRow(
+                    livePost: livePost,
+                    uid: uid,
+                    showCounts: true,
+                    onOpenPalette: { expandedReactionPostId = post.id }
+                )
+            }
 
             HStack(spacing: 22) {
                 Button {
@@ -465,9 +506,11 @@ struct FeedPostCard: View {
                 .scaleEffect(livePost.isLikedByCurrentUser(uid) ? 1.14 : 1.0)
                 .animation(.spring(response: 0.35, dampingFraction: 0.6), value: livePost.isLikedByCurrentUser(uid))
 
-                Label("\(livePost.commentCount)", systemImage: "bubble.right.fill")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
+                if livePost.commentsEnabled || isAuthor {
+                    Label("\(livePost.commentCount)", systemImage: "bubble.right.fill")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
 
                 Spacer()
             }

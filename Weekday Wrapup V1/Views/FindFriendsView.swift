@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct FindFriendsView: View {
     @EnvironmentObject private var firestore: FirestoreManager
@@ -8,9 +9,53 @@ struct FindFriendsView: View {
     @State private var results: [AppUser] = []
     @State private var suggested: [AppUser] = []
     @State private var loading = false
+    @State private var showInviteSheet = false
+    @State private var selectedUserForInvite: AppUser?
+    @State private var showNativeInviteSheet = false
 
     var body: some View {
         List {
+            Section {
+                Button {
+                    showNativeInviteSheet = true
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "person.badge.plus")
+                            .font(.body.weight(.semibold))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Invite Friends")
+                                .font(.subheadline.weight(.semibold))
+                            Text("Share a warm invite to join you here.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "square.and.arrow.up")
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if suggested.isEmpty && results.isEmpty && !loading {
+                VStack(spacing: 12) {
+                    Image(systemName: "person.2.wave.2.fill")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+
+                    Text("No people yet")
+                        .font(.headline)
+
+                    Text("Invite friends or check back soon.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 40)
+                .listRowBackground(Color.clear)
+            }
+
             if !suggested.isEmpty {
                 Section("Suggested for you") {
                     ForEach(suggested) { user in
@@ -30,6 +75,29 @@ struct FindFriendsView: View {
             }
         }
         .navigationTitle("Find Friends")
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                NavigationLink {
+                    ConversationsView()
+                        .environmentObject(firestore)
+                        .environmentObject(auth)
+                } label: {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                }
+                .accessibilityLabel("Messages")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showNativeInviteSheet = true
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .accessibilityLabel("Invite Friends")
+            }
+        }
+        .sheet(isPresented: $showNativeInviteSheet) {
+            AppInviteShareSheet()
+        }
         .searchable(text: $query, prompt: "Search by name")
         .overlay {
             if loading {
@@ -42,6 +110,26 @@ struct FindFriendsView: View {
         }
         .onChange(of: query) { _, _ in
             Task { await runSearch() }
+        }
+        .sheet(isPresented: $showInviteSheet) {
+            if let user = selectedUserForInvite {
+                NavigationStack {
+                    SupportInviteSheetView { activity in
+                        Task {
+                            guard let fromUserId = auth.currentUser?.id, !fromUserId.isEmpty else { return }
+                            do {
+                                try await firestore.sendSupportInvite(
+                                    fromUserId: fromUserId,
+                                    targetUserId: user.id,
+                                    activity: activity
+                                )
+                            } catch {
+                                AppLogger.error("FindFriends invite failed: \(error.localizedDescription)")
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -74,6 +162,22 @@ struct FindFriendsView: View {
                     .clipShape(Capsule())
             }
             .buttonStyle(.plain)
+
+            Button {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                selectedUserForInvite = user
+                showInviteSheet = true
+            } label: {
+                Image(systemName: "paperplane")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(Color.orange.opacity(0.12))
+                    .foregroundStyle(.orange)
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Invite friend")
         }
     }
 
@@ -104,4 +208,21 @@ struct FindFriendsView: View {
             AppLogger.error("FindFriends toggle follow failed: \(error.localizedDescription)")
         }
     }
+}
+
+// MARK: - Native App Invite Share Sheet
+
+struct AppInviteShareSheet: UIViewControllerRepresentable {
+    private let message = "I've been using this app to reflect on emotions and mental health in a healthier way. Thought you might like it too 💛"
+    // TODO: Replace with the real app deep link when available.
+    private let inviteURL = URL(string: "https://weekdaywrapup.app/invite")!
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(
+            activityItems: [message, inviteURL],
+            applicationActivities: nil
+        )
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

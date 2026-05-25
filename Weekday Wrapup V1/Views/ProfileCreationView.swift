@@ -6,6 +6,7 @@ struct ProfileCreationView: View {
     @Binding var userName: String
     @Binding var profileImage: Image?
     @Binding var astrologySign: String
+    var onContinue: (() async -> Void)? = nil
     
     @State private var showImagePicker = false
     @State private var inputImage: UIImage?
@@ -38,7 +39,12 @@ struct ProfileCreationView: View {
                     .font(.headline)
                 Spacer()
                 Button("Continue") {
-                    isPresented = false
+                    Task {
+                        await onContinue?()
+                        await MainActor.run {
+                            isPresented = false
+                        }
+                    }
                 }
                 .font(.body.bold())
                 .foregroundColor(userName.isEmpty ? .gray : .accentColor)

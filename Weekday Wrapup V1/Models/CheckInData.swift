@@ -13,9 +13,15 @@ struct CheckInData: Identifiable {
     /// Order preserved from the wheel / Firestore `selectedEmotions` array (first = primary for calendar tint).
     let selectedEmotionsOrdered: [String]
     let emotionalInsight: String
+    /// Gratitude note captured during check-in.
+    let gratitudeText: String
     let whoopsText: String
     let poopsText: String
+    /// Anticipation / hope prompt replacing weekly + monthly goals.
+    let lookForwardTo: String
+    /// Legacy field; kept for older posts and Firestore compatibility.
     let weeklyGoal: String
+    /// Legacy field; kept for older posts and Firestore compatibility.
     let monthlyGoal: String
     let profileImage: Image?
     let visibility: PostVisibility
@@ -35,10 +41,15 @@ struct CheckInData: Identifiable {
     var title: String = ""
     /// Optional remote image URL shown in feed cards.
     let imageURL: String?
+    /// Only post author sees reaction counts when true.
+    var hideReactions: Bool = false
+    /// Comment section hidden when true.
+    var hideComments: Bool = false
 
     init(userName: String, astrologySign: String, weekNumber: Int, weeklyEmoji: String,
          checkInImage: UIImage?, selectedEmotions: Set<String>, emotionalInsight: String,
-         whoopsText: String, poopsText: String, weeklyGoal: String, monthlyGoal: String,
+         gratitudeText: String = "", whoopsText: String, poopsText: String,
+         lookForwardTo: String = "", weeklyGoal: String = "", monthlyGoal: String = "",
          profileImage: Image? = nil, checkInVideoURL: URL? = nil, drawingImage: UIImage? = nil,
          visibility: PostVisibility = .public, date: Date = Date(), intensity: Int? = nil,
          whatHelped: String? = nil, manualEntry: Bool = false, helpfulTags: [String]? = nil, sharedGroupIds: [String]? = nil,
@@ -67,9 +78,14 @@ struct CheckInData: Identifiable {
             self.selectedEmotionsOrdered = Array(selectedEmotions).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
         }
         self.emotionalInsight = emotionalInsight
+        self.gratitudeText = gratitudeText
         self.whoopsText = whoopsText
         self.poopsText = poopsText
-        self.weeklyGoal = weeklyGoal
+        let resolvedLookForward = lookForwardTo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? weeklyGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+            : lookForwardTo
+        self.lookForwardTo = resolvedLookForward
+        self.weeklyGoal = resolvedLookForward.isEmpty ? weeklyGoal : resolvedLookForward
         self.monthlyGoal = monthlyGoal
         self.profileImage = profileImage
         self.visibility = visibility
@@ -96,11 +112,12 @@ struct CheckInData: Identifiable {
 
         Insight: \(emotionalInsight)
 
+        Grateful for: \(gratitudeText)
+
         Whoops: \(whoopsText)
         Poops: \(poopsText)
 
-        Weekly Goal: \(weeklyGoal)
-        Monthly Goal: \(monthlyGoal)
+        Looking forward to: \(lookForwardTo)
 
         Visibility: \(visibility.rawValue)
         """
@@ -116,8 +133,10 @@ struct CheckInData: Identifiable {
             checkInImage: nil,
             selectedEmotions: Set(post.selectedEmotions),
             emotionalInsight: post.insight,
+            gratitudeText: post.gratitudeText,
             whoopsText: post.whoop,
             poopsText: "",
+            lookForwardTo: post.lookForwardTo.isEmpty ? post.goal : post.lookForwardTo,
             weeklyGoal: post.goal,
             monthlyGoal: "",
             profileImage: nil,

@@ -15,6 +15,7 @@ private struct ReactionPressButtonStyle: ButtonStyle {
 struct FeedReactionRow: View {
     let livePost: FeedPost
     let uid: String?
+    var showCounts: Bool = true
     let onOpenPalette: () -> Void
 
     @EnvironmentObject private var firestore: FirestoreManager
@@ -76,7 +77,7 @@ struct FeedReactionRow: View {
             VStack(spacing: 2) {
                 Text(emoji)
                     .font(.system(size: 22))
-                if count > 0 {
+                if count > 0 && showCounts {
                     Text("\(count)")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)

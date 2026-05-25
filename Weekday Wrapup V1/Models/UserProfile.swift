@@ -14,8 +14,10 @@ struct UserProfileSupportPreferences: Codable, Equatable, Hashable {
 
 struct UserProfile: Codable, Equatable, Hashable {
     var name: String?
+    var zodiacSign: String?
     var bio: String?
     var profileImageURL: String?
+    var hasProfileImage: Bool?
     var location: String?
     var school: String?
     var pronouns: String?
@@ -42,8 +44,10 @@ struct UserProfile: Codable, Equatable, Hashable {
 
     init(
         name: String? = nil,
+        zodiacSign: String? = nil,
         bio: String? = nil,
         profileImageURL: String? = nil,
+        hasProfileImage: Bool? = nil,
         location: String? = nil,
         school: String? = nil,
         pronouns: String? = nil,
@@ -62,8 +66,10 @@ struct UserProfile: Codable, Equatable, Hashable {
         profileVisibility: String? = nil
     ) {
         self.name = name
+        self.zodiacSign = zodiacSign
         self.bio = bio
         self.profileImageURL = profileImageURL
+        self.hasProfileImage = hasProfileImage
         self.location = location
         self.school = school
         self.pronouns = pronouns

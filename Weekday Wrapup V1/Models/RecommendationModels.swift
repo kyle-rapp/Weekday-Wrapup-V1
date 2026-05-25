@@ -22,7 +22,7 @@ struct Recommendation: Identifiable, Equatable, Hashable {
     let intensityRange: ClosedRange<Int>
 
     init(
-        id: UUID = UUID(),
+        id: UUID? = nil,
         title: String,
         reason: String,
         action: String,
@@ -31,7 +31,13 @@ struct Recommendation: Identifiable, Equatable, Hashable {
         emotionTargets: [String] = [],
         intensityRange: ClosedRange<Int> = 1 ... 10
     ) {
-        self.id = id
+        self.id = id ?? Self.stableID(
+            title: title,
+            reason: reason,
+            action: action,
+            type: type,
+            tags: tags
+        )
         self.title = title
         self.reason = reason
         self.action = action
@@ -39,6 +45,38 @@ struct Recommendation: Identifiable, Equatable, Hashable {
         self.tags = tags
         self.emotionTargets = emotionTargets
         self.intensityRange = intensityRange
+    }
+
+    private static func stableID(
+        title: String,
+        reason: String,
+        action: String,
+        type: RecommendationType,
+        tags: [String]
+    ) -> UUID {
+        let normalized = [
+            title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            reason.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            type.rawValue,
+            tags.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.sorted().joined(separator: ",")
+        ].joined(separator: "|")
+
+        func fnv1a64(_ text: String, seed: UInt64 = 0xcbf29ce484222325) -> UInt64 {
+            var hash = seed
+            let prime: UInt64 = 1099511628211
+            for byte in text.utf8 {
+                hash ^= UInt64(byte)
+                hash = hash &* prime
+            }
+            return hash
+        }
+
+        let first = fnv1a64(normalized, seed: 0xcbf29ce484222325)
+        let second = fnv1a64(normalized + "|weekday_wrapup_v1", seed: 0x84222325cbf29ce4)
+        let hex = String(format: "%016llx%016llx", first, second)
+        let uuidString = "\(hex.prefix(8))-\(hex.dropFirst(8).prefix(4))-\(hex.dropFirst(12).prefix(4))-\(hex.dropFirst(16).prefix(4))-\(hex.dropFirst(20).prefix(12))"
+        return UUID(uuidString: String(uuidString)) ?? UUID()
     }
 }
 

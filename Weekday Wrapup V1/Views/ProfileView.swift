@@ -31,6 +31,19 @@ struct ProfileView: View {
     @State private var showInviteSheet = false
     @State private var showGiftSheet = false
     @State private var isLoadingProfile = true
+    @State private var followerCount: Int = 0
+    @State private var followingCount: Int = 0
+    @State private var postCount: Int = 0
+    @State private var followersList: [AppUser] = []
+    @State private var followingUsersList: [AppUser] = []
+    @State private var showFollowersList = false
+    @State private var showFollowingList = false
+    @State private var showThinkingOfYouToast = false
+    @State private var thinkingOfYouInFlight = false
+    @State private var thinkingOfYouError: String?
+    @State private var showDirectMessage = false
+    @State private var directConversation: Conversation?
+    @State private var loadRequestToken = 0
 
     private var isSelf: Bool { auth.currentUser?.id == userId }
     private var viewerId: String? { auth.currentUser?.id }
@@ -129,6 +142,8 @@ struct ProfileView: View {
                     }
 
                     emotionalSnapshotSection
+
+                    emotionalBalanceCard
 
                     if isSelf {
                         thingsThatHelpSection
@@ -246,12 +261,49 @@ struct ProfileView: View {
                 Task { await sendSupportGift(link: link) }
             }
         }
+        .sheet(isPresented: $showFollowersList) {
+            NavigationStack {
+                socialUsersList(title: "Followers", users: followersList)
+            }
+        }
+        .sheet(isPresented: $showFollowingList) {
+            NavigationStack {
+                socialUsersList(title: "Following", users: followingUsersList)
+            }
+        }
+        .navigationDestination(isPresented: $showDirectMessage) {
+            if let conv = directConversation {
+                ChatView(
+                    conversation: conv,
+                    otherUserName: profile?.name ?? fallbackName
+                )
+                .environmentObject(firestore)
+                .environmentObject(auth)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if showThinkingOfYouToast {
+                Text("They'll know you're thinking of them 🤍")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 14)
+                    .background(
+                        Capsule()
+                            .fill(Color.pink.opacity(0.85))
+                            .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+                    )
+                    .padding(.bottom, 36)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: showThinkingOfYouToast)
         .onChange(of: showEditor) { _, open in
             if !open {
                 Task { await load(forceRefresh: true) }
             }
         }
-        .task { await load(forceRefresh: false) }
+        .task(id: userId) { await load(forceRefresh: false) }
     }
 
     @ViewBuilder
@@ -291,58 +343,135 @@ struct ProfileView: View {
 
     @ViewBuilder
     private var headerBlock: some View {
-        HStack(alignment: .top, spacing: 16) {
-            profileAvatar
-            VStack(alignment: .leading, spacing: 8) {
-                Text(profile?.name ?? fallbackName)
-                    .font(.title.bold())
-                    .foregroundStyle(AppTheme.colors.textPrimary)
-                Text("@\(String(userId.prefix(8)))")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.colors.textSecondary)
-                if supportSettings.allowSupport && supportSettings.isTemporarilyActiveNow {
-                    Text("Open to support today 💛")
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+                profileAvatar
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(profile?.name ?? fallbackName)
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(AppTheme.colors.textPrimary)
+                    Text("@\(String(userId.prefix(8)))")
                         .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(Color.yellow.opacity(0.18)))
-                        .transition(.opacity)
-                }
-
-                if let pronouns = profile?.pronouns, !pronouns.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(pronouns)
-                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(AppTheme.colors.textSecondary)
+                    if let pronouns = profile?.pronouns, !pronouns.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(pronouns)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(AppTheme.colors.textSecondary)
+                    }
                 }
-                if let rs = profile?.relationshipStatus, !rs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(rs)
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.colors.textSecondary)
-                }
-                if let loc = LocationDisplay.coarse(profile?.location), !loc.isEmpty {
-                    Label(loc, systemImage: "mappin.and.ellipse")
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.colors.textSecondary)
-                }
-                if let school = profile?.school, !school.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Label(school, systemImage: "graduationcap")
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.colors.textSecondary)
-                }
-                favoriteSongLine
-                venmoLine
-                if let bio = profile?.bio, !bio.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(bio)
-                        .font(.body)
-                        .foregroundStyle(AppTheme.colors.textSecondary)
-                        .padding(.top, 2)
-                }
+                Spacer(minLength: 8)
             }
-            Spacer(minLength: 0)
+
+            if supportSettings.allowSupport && supportSettings.isTemporarilyActiveNow {
+                Text("Open to support today 💛")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(Color.yellow.opacity(0.18)))
+                    .transition(.opacity)
+            }
+
+            if !profileMetadataRows.isEmpty {
+                VStack(spacing: 8) {
+                    ForEach(profileMetadataRows, id: \.label) { row in
+                        HStack(spacing: 8) {
+                            Image(systemName: row.icon)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.colors.textSecondary)
+                                .frame(width: 14)
+                            Text(row.label)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.colors.textSecondary)
+                            Spacer(minLength: 8)
+                            Text(row.value)
+                                .font(.subheadline)
+                                .foregroundStyle(AppTheme.colors.textPrimary)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(AppTheme.colors.secondaryBackground.opacity(0.7))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                )
+            }
+
+            if let bio = profile?.bio, !bio.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(bio)
+                    .font(.body)
+                    .foregroundStyle(AppTheme.colors.textSecondary)
+                    .padding(.top, 2)
+            }
+            socialStatsRow
+
+            if !isSelf {
+                HStack(spacing: 10) {
+                    Button {
+                        Task { await sendThinkingOfYou() }
+                    } label: {
+                        Label("Thinking of you 🤍", systemImage: "heart")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.pink.opacity(0.9))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Capsule().fill(Color.pink.opacity(0.10)))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(thinkingOfYouInFlight)
+
+                    Button {
+                        Task { await openDirectMessage() }
+                    } label: {
+                        Label("Message", systemImage: "bubble.left.and.bubble.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.colors.ocean)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Capsule().fill(AppTheme.colors.ocean.opacity(0.10)))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.top, 4)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .background(cardBackground)
+    }
+
+    private var profileMetadataRows: [(label: String, value: String, icon: String)] {
+        var rows: [(label: String, value: String, icon: String)] = []
+        if let zodiac = profile?.zodiacSign?.trimmingCharacters(in: .whitespacesAndNewlines), !zodiac.isEmpty {
+            rows.append(("Zodiac", zodiac, "sparkles"))
+        }
+        if profile?.showFavoriteSong != false,
+           let song = profile?.favoriteSong?.trimmingCharacters(in: .whitespacesAndNewlines), !song.isEmpty {
+            let artist = profile?.favoriteArtist?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let value = artist.isEmpty ? song : "\(song) - \(artist)"
+            rows.append(("Favorite song", value, "music.note"))
+        }
+        if let rs = profile?.relationshipStatus?.trimmingCharacters(in: .whitespacesAndNewlines), !rs.isEmpty {
+            rows.append(("Relationship", rs, "person.2"))
+        }
+        if let loc = LocationDisplay.coarse(profile?.location), !loc.isEmpty {
+            rows.append(("Location", loc, "mappin.and.ellipse"))
+        }
+        if let school = profile?.school?.trimmingCharacters(in: .whitespacesAndNewlines), !school.isEmpty {
+            rows.append(("School", school, "graduationcap"))
+        }
+        if profile?.showVenmoUsername == true {
+            let venmo = profile?.venmoUsername?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !venmo.isEmpty {
+                rows.append(("Venmo", "@\(venmo.replacingOccurrences(of: "@", with: ""))", "dollarsign.circle"))
+            }
+        }
+        return rows
     }
 
     @ViewBuilder
@@ -625,6 +754,73 @@ struct ProfileView: View {
             .shadow(color: AppTheme.colors.bark.opacity(0.06), radius: 8, x: 0, y: 3)
     }
 
+    @ViewBuilder
+    private var socialStatsRow: some View {
+        HStack(spacing: 22) {
+            statView(value: postCount, label: "Posts")
+
+            if !isSelf {
+                Button {
+                    Task {
+                        followingUsersList = []
+                        followersList = await firestore.fetchFollowers(userId: userId)
+                        showFollowersList = true
+                    }
+                } label: {
+                    statView(value: followerCount, label: "Followers")
+                }
+                .buttonStyle(.plain)
+            } else {
+                statView(value: followerCount, label: "Followers")
+            }
+
+            if !isSelf {
+                Button {
+                    Task {
+                        followingUsersList = await firestore.fetchFollowingUsers(userId: userId)
+                        showFollowingList = true
+                    }
+                } label: {
+                    statView(value: followingCount, label: "Following")
+                }
+                .buttonStyle(.plain)
+            } else {
+                statView(value: followingCount, label: "Following")
+            }
+        }
+        .padding(.top, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+    }
+
+    private func statView(value: Int, label: String) -> some View {
+        VStack(spacing: 2) {
+            Text("\(value)")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func socialUsersList(title: String, users: [AppUser]) -> some View {
+        List(users) { user in
+            VStack(alignment: .leading, spacing: 2) {
+                Text(user.name)
+                    .font(.body.weight(.semibold))
+                if !user.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(user.email)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
     private func chipGrid(_ items: [String]) -> some View {
         Group {
             if items.isEmpty {
@@ -717,6 +913,113 @@ struct ProfileView: View {
             }
         }
         return counts.sorted { $0.value > $1.value }.map { ($0.key, $0.value) }
+    }
+
+    // MARK: - Calm vs Stress Ratio
+
+    private let calmEmotions: Set<String> = ["joyful", "empowered", "peaceful", "grateful", "happy", "hopeful", "content", "excited",
+                                              "proud", "loving", "trusting", "creative", "cheerful", "energetic", "faithful", "nurturing"]
+    private let stressEmotions: Set<String> = ["sad", "mad", "scared", "anxious", "overwhelmed", "lonely", "stressed", "angry", "frustrated",
+                                               "depressed", "guilty", "ashamed", "hostile", "helpless", "insecure", "confused", "rejected"]
+
+    private var emotionalBalance: (calm: Double, stress: Double)? {
+        let posts = Array(recentAuthorPosts.prefix(20))
+        guard !posts.isEmpty else { return nil }
+
+        var calmTotal = 0.0; var calmCount = 0
+        var stressTotal = 0.0; var stressCount = 0
+
+        for post in posts {
+            let intensity = Double(post.intensity ?? 5)
+            let emotions = post.selectedEmotions.map { $0.lowercased() }
+            let isCalm = emotions.contains { calmEmotions.contains($0) }
+            let isStress = emotions.contains { stressEmotions.contains($0) }
+            if isCalm { calmTotal += intensity; calmCount += 1 }
+            if isStress { stressTotal += intensity; stressCount += 1 }
+        }
+
+        let calmScore = calmCount > 0 ? (calmTotal / Double(calmCount)) / 10.0 : 0.5
+        let stressScore = stressCount > 0 ? (stressTotal / Double(stressCount)) / 10.0 : 0.5
+        return (calmScore, stressScore)
+    }
+
+    /// A 0–10 calm-leaning score. 5 = balanced, >5 = calm-leaning, <5 = stress-leaning.
+    private var calmStressScore: Double? {
+        guard let b = emotionalBalance else { return nil }
+        let ratio = b.calm / max(b.calm + b.stress, 0.01)
+        return ratio * 10.0
+    }
+
+    private var emotionalBalanceLabel: String {
+        guard let score = calmStressScore else { return "Keep logging to see your balance." }
+        switch score {
+        case 7...: return "Leaning calm lately 🌿"
+        case 4..<7: return "Roughly balanced — steady and real 🌀"
+        default: return "A bit heavier recently — take it easy 💛"
+        }
+    }
+
+    @ViewBuilder
+    private var emotionalBalanceCard: some View {
+        let posts = Array(recentAuthorPosts.prefix(20))
+        if !posts.isEmpty {
+            sectionCard(title: "Calm vs Stress Ratio", icon: "waveform.path.ecg") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(emotionalBalanceLabel)
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if let score = calmStressScore {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("0")
+                                    .font(.caption2)
+                                    .foregroundStyle(Color.orange.opacity(0.7))
+                                Spacer()
+                                Text("\(String(format: "%.1f", score)) / 10")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(AppTheme.colors.textSecondary)
+                                Spacer()
+                                Text("10")
+                                    .font(.caption2)
+                                    .foregroundStyle(Color.teal.opacity(0.7))
+                            }
+                            GeometryReader { geo in
+                                ZStack(alignment: .leading) {
+                                    Capsule()
+                                        .fill(Color.orange.opacity(0.15))
+                                        .frame(height: 10)
+                                    Capsule()
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [Color.orange.opacity(0.6), Color.teal.opacity(0.7)],
+                                                startPoint: .leading,
+                                                endPoint: .trailing
+                                            )
+                                        )
+                                        .frame(width: geo.size.width * CGFloat(score / 10.0), height: 10)
+                                }
+                            }
+                            .frame(height: 10)
+                            HStack {
+                                Text("More stress")
+                                    .font(.caption2)
+                                    .foregroundStyle(Color.orange.opacity(0.65))
+                                Spacer()
+                                Text("More calm")
+                                    .font(.caption2)
+                                    .foregroundStyle(Color.teal.opacity(0.65))
+                            }
+                        }
+                    }
+
+                    Text("This is private and for your reflection only.")
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.colors.textSecondary.opacity(0.6))
+                }
+            }
+        }
     }
 
     private func emotionTrendLine(from posts: [FeedPost]) -> String {
@@ -902,15 +1205,57 @@ struct ProfileView: View {
         }
     }
 
+    private func sendThinkingOfYou() async {
+        guard let from = viewerId, from != userId else { return }
+        thinkingOfYouInFlight = true
+        defer { Task { @MainActor in thinkingOfYouInFlight = false } }
+        do {
+            try await firestore.sendThinkingOfYou(from: from, to: userId)
+            await MainActor.run {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                withAnimation { showThinkingOfYouToast = true }
+            }
+            try? await Task.sleep(nanoseconds: 2_800_000_000)
+            await MainActor.run {
+                withAnimation { showThinkingOfYouToast = false }
+            }
+        } catch {
+            await MainActor.run {
+                thinkingOfYouError = error.localizedDescription
+            }
+        }
+    }
+
+    private func openDirectMessage() async {
+        guard let myId = viewerId, myId != userId else { return }
+        do {
+            let conv = try await firestore.fetchOrCreateConversation(between: myId, and: userId)
+            await MainActor.run {
+                directConversation = conv
+                showDirectMessage = true
+            }
+        } catch {
+            AppLogger.error("openDirectMessage failed: \(error.localizedDescription)")
+        }
+    }
+
     private func load(forceRefresh: Bool) async {
+        let requestToken = await MainActor.run { () -> Int in
+            loadRequestToken += 1
+            return loadRequestToken
+        }
         await MainActor.run {
-            isLoadingProfile = true
+            if forceRefresh || profile == nil {
+                isLoadingProfile = true
+            }
         }
         let name = await firestore.userDisplayName(userId: userId)
         async let profileTask = profileManager.loadProfile(userId: userId, forceRefresh: forceRefresh)
         async let detailsTask = firestore.fetchProfileDetails(userId: userId)
         async let supportTask = firestore.fetchSupportSettings(userId: userId)
         async let eligibleTask = firestore.hasAtLeastPosts(authorId: userId, minimum: 10)
+        async let followerTask = firestore.getFollowerCount(userId: userId)
+        async let followingTask = firestore.getFollowingCount(userId: userId)
         async let friendTask: Bool = {
             guard let viewer = viewerId else { return false }
             return await firestore.isFriend(currentUserId: viewer, otherUserId: userId)
@@ -925,6 +1270,8 @@ struct ProfileView: View {
         let det = await detailsTask
         var support = await supportTask ?? SupportSettings()
         let eligible = await eligibleTask
+        let followers = await followerTask
+        let following = await followingTask
         let friend = await friendTask
 
         if support.isExpiredNow, isSelf {
@@ -936,8 +1283,10 @@ struct ProfileView: View {
         let postsSnapshot = firestore.posts
             .filter { $0.authorId == userId }
             .sorted { ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) }
+        let posts = postsSnapshot.count
 
         await MainActor.run {
+            guard requestToken == loadRequestToken else { return }
             fallbackName = name
             profile = prof
             profileDetails = det
@@ -945,6 +1294,9 @@ struct ProfileView: View {
                 supportSettings = support
             }
             isFriend = friend
+            followerCount = followers
+            followingCount = following
+            postCount = posts
             postCountEligible = eligible
             selfPreferences = prefs
             isLoadingProfile = false

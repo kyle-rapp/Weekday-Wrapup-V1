@@ -63,6 +63,11 @@ final class AuthManager: ObservableObject {
         let ref = db.collection("users").document(user.uid)
         do {
             let snap = try await ref.getDocument()
+            let profileSnap = try await db.collection("users").document(user.uid).collection("profile").document("main").getDocument()
+            let profileData = profileSnap.data() ?? [:]
+            let zodiacSign = profileData["zodiacSign"] as? String
+            let profileImageURL = profileData["profileImageURL"] as? String
+            let hasProfileImage = profileData["hasProfileImage"] as? Bool ?? false
             if let data = snap.data(),
                let name = data["name"] as? String,
                let email = data["email"] as? String {
@@ -81,7 +86,10 @@ final class AuthManager: ObservableObject {
                     followerCount: followerCount,
                     followingCount: followingCount,
                     checkInStreak: streak,
-                    lastCheckInDate: lastCheckIn
+                    lastCheckInDate: lastCheckIn,
+                    zodiacSign: zodiacSign,
+                    profileImageURL: profileImageURL,
+                    hasProfileImage: hasProfileImage
                 )
                 if data["following"] == nil {
                     try? await ref.updateData(["following": [String]()])

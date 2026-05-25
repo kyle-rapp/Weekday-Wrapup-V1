@@ -13,6 +13,8 @@ struct UserProfileView: View {
     @State private var showFollowers = false
     @State private var showFollowing = false
     @State private var loading = false
+    @State private var showThinkingOfYouToast = false
+    @State private var thinkingOfYouInFlight = false
 
     private var isSelf: Bool { auth.currentUser?.id == userId }
 
@@ -26,18 +28,34 @@ struct UserProfileView: View {
                 statsRow
 
                 if !isSelf {
-                    Button {
-                        Task { await toggleFollow() }
-                    } label: {
-                        Text(isFollowing ? "Following" : "Follow")
-                            .font(.subheadline.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(isFollowing ? Color.gray.opacity(0.15) : Color.blue.opacity(0.15))
-                            .foregroundStyle(isFollowing ? Color.primary : Color.blue)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    VStack(spacing: 10) {
+                        Button {
+                            Task { await toggleFollow() }
+                        } label: {
+                            Text(isFollowing ? "Following" : "Follow")
+                                .font(.subheadline.weight(.semibold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(isFollowing ? Color.gray.opacity(0.15) : Color.blue.opacity(0.15))
+                                .foregroundStyle(isFollowing ? Color.primary : Color.blue)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            Task { await sendThinkingOfYou() }
+                        } label: {
+                            Label("Thinking of you 💛", systemImage: "heart")
+                                .font(.subheadline.weight(.semibold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(Color.pink.opacity(0.10))
+                                .foregroundStyle(Color.pink.opacity(0.9))
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(thinkingOfYouInFlight)
                     }
-                    .buttonStyle(.plain)
                 }
             }
             .padding(20)
@@ -49,6 +67,23 @@ struct UserProfileView: View {
                 ProgressView()
             }
         }
+        .overlay(alignment: .bottom) {
+            if showThinkingOfYouToast {
+                Text("They'll know you're thinking of them 💛")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 14)
+                    .background(
+                        Capsule()
+                            .fill(Color.pink.opacity(0.85))
+                            .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+                    )
+                    .padding(.bottom, 36)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: showThinkingOfYouToast)
         .task { await loadProfile() }
         .sheet(isPresented: $showFollowers) {
             NavigationStack {
@@ -136,6 +171,25 @@ struct UserProfileView: View {
             await loadProfile()
         } catch {
             AppLogger.error("UserProfileView follow toggle failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func sendThinkingOfYou() async {
+        guard let from = auth.currentUser?.id, from != userId else { return }
+        thinkingOfYouInFlight = true
+        defer { Task { @MainActor in thinkingOfYouInFlight = false } }
+        do {
+            try await firestore.sendThinkingOfYou(from: from, to: userId)
+            await MainActor.run {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                withAnimation { showThinkingOfYouToast = true }
+            }
+            try? await Task.sleep(nanoseconds: 2_800_000_000)
+            await MainActor.run {
+                withAnimation { showThinkingOfYouToast = false }
+            }
+        } catch {
+            AppLogger.error("UserProfileView sendThinkingOfYou failed: \(error.localizedDescription)")
         }
     }
 }

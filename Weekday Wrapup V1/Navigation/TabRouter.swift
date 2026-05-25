@@ -16,6 +16,7 @@ final class TabRouter: ObservableObject {
     @Published var postedToastVisible = false
     @Published var showPostCheckInReflection = false
     @Published var dailyRecommendations: DailyRecommendationsPresentation?
+    @Published var focusDopamineMenuInGrow = false
 
     private var toastDismissTask: Task<Void, Never>?
     private var reflectionWorkItem: DispatchWorkItem?
@@ -26,6 +27,15 @@ final class TabRouter: ObservableObject {
 
     func dismissDailyRecommendations() {
         dailyRecommendations = nil
+    }
+
+    func openDopamineMenuInGrow() {
+        selectedTab = .grow
+        focusDopamineMenuInGrow = true
+    }
+
+    func consumeDopamineMenuFocusRequest() {
+        focusDopamineMenuInGrow = false
     }
 
     /// Call after a successful feed post: switches to Feed, shows toast, dismisses share sheet (caller dismisses sheet).
