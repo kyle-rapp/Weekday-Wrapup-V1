@@ -15,6 +15,10 @@ struct UserProfileView: View {
     @State private var loading = false
     @State private var showThinkingOfYouToast = false
     @State private var thinkingOfYouInFlight = false
+    @State private var showReportSheet = false
+    @State private var showBlockConfirm = false
+    @State private var showSafetyAlert = false
+    @State private var safetyAlertText = ""
 
     private var isSelf: Bool { auth.currentUser?.id == userId }
 
@@ -62,6 +66,26 @@ struct UserProfileView: View {
         }
         .navigationTitle("Profile")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !isSelf {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button(role: .destructive) {
+                            showReportSheet = true
+                        } label: {
+                            Label("Report user", systemImage: "exclamationmark.bubble")
+                        }
+                        Button(role: .destructive) {
+                            showBlockConfirm = true
+                        } label: {
+                            Label("Block user", systemImage: "person.crop.circle.badge.xmark")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                }
+            }
+        }
         .overlay {
             if loading {
                 ProgressView()
@@ -94,6 +118,28 @@ struct UserProfileView: View {
             NavigationStack {
                 SocialListView(title: "Following", users: following)
             }
+        }
+        .sheet(isPresented: $showReportSheet) {
+            ReportSheetView(
+                title: "Report user",
+                target: ReportTarget(reportedUserId: userId)
+            ) {
+                safetyAlertText = "Thanks for letting us know. We'll review this."
+                showSafetyAlert = true
+            }
+            .environmentObject(auth)
+            .environmentObject(firestore)
+        }
+        .confirmationDialog("Block this user?", isPresented: $showBlockConfirm, titleVisibility: .visible) {
+            Button("Block user", role: .destructive) {
+                Task { await blockUser() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You won’t see posts from this person anymore.")
+        }
+        .alert(safetyAlertText, isPresented: $showSafetyAlert) {
+            Button("OK", role: .cancel) {}
         }
     }
 
@@ -190,6 +236,18 @@ struct UserProfileView: View {
             }
         } catch {
             AppLogger.error("UserProfileView sendThinkingOfYou failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func blockUser() async {
+        guard let currentUserId = auth.currentUser?.id, currentUserId != userId else { return }
+        do {
+            try await firestore.blockUser(currentUserId: currentUserId, blockedUserId: userId)
+            safetyAlertText = "You won’t see posts from this person anymore."
+            showSafetyAlert = true
+        } catch {
+            safetyAlertText = "We couldn't block this user right now."
+            showSafetyAlert = true
         }
     }
 }

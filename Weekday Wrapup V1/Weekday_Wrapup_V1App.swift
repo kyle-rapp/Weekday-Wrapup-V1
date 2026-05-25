@@ -6,7 +6,11 @@
 //
 
 import SwiftUI
+import FirebaseAuth
 import FirebaseCore
+#if canImport(FirebaseCrashlytics)
+import FirebaseCrashlytics
+#endif
 
 /// FILE: Weekday_Wrapup_V1App.swift
 /// Configures Firebase and switches between auth and the main app.
@@ -86,11 +90,19 @@ private struct RootView: View {
                 firestore.teardownForLogout()
                 return
             }
-            firestore.startPostsListener()
-            if let uid = auth.currentUser?.id {
-                firestore.startFollowingListener(userId: uid)
-                firestore.startGroupsListener(userId: uid)
+            guard let appUid = auth.currentUser?.id,
+                  let firebaseUid = Auth.auth().currentUser?.uid,
+                  appUid == firebaseUid
+            else {
+                #if DEBUG
+                print("[FIRESTORE][startup] listeners deferred appUid=\(auth.currentUser?.id ?? "nil") firebaseUid=\(Auth.auth().currentUser?.uid ?? "nil")")
+                #endif
+                return
             }
+            firestore.startPostsListener()
+            firestore.startFollowingListener(userId: appUid)
+            firestore.startBlockedUsersListener(userId: appUid)
+            firestore.startGroupsListener(userId: appUid)
             if shouldSeedDemoData {
                 await firestore.seedFirestoreIfEmpty()
             }
@@ -102,6 +114,6 @@ private struct RootView: View {
 
     private var listenerTaskKey: String {
         let login = auth.isLoggedIn ? "logged_in" : "logged_out"
-        return "\(login)|\(auth.currentUser?.id ?? "none")"
+        return "\(login)|\(auth.currentUser?.id ?? "none")|\(Auth.auth().currentUser?.uid ?? "none")"
     }
 }

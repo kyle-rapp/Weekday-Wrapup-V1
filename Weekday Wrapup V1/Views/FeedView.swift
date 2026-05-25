@@ -273,6 +273,10 @@ struct FeedPostCard: View {
     @EnvironmentObject private var feedViewModel: FeedViewModel
 
     @State private var showInviteSheet = false
+    @State private var showReportSheet = false
+    @State private var showBlockConfirm = false
+    @State private var showDeleteConfirm = false
+    @State private var actionMessage: String?
 
     private var uid: String? { auth.currentUser?.id }
     private var livePost: FeedPost {
@@ -353,6 +357,7 @@ struct FeedPostCard: View {
                             }
                             .buttonStyle(.borderless)
                         }
+                        postMenu
                     }
                     Text("🔥 \(livePost.user.streak) week streak")
                         .font(.caption)
@@ -530,6 +535,89 @@ struct FeedPostCard: View {
                 recipientName: livePost.user.name,
                 recipientUserId: livePost.authorId
             )
+        }
+        .sheet(isPresented: $showReportSheet) {
+            ReportSheetView(
+                title: "Report post",
+                target: ReportTarget(
+                    reportedUserId: livePost.authorId,
+                    reportedPostId: livePost.id
+                )
+            ) {
+                actionMessage = "Thanks for letting us know. We'll review this."
+            }
+            .environmentObject(auth)
+            .environmentObject(firestore)
+        }
+        .confirmationDialog("Block this user?", isPresented: $showBlockConfirm, titleVisibility: .visible) {
+            Button("Block user", role: .destructive) {
+                Task { await blockAuthor() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You won’t see posts from this person anymore.")
+        }
+        .confirmationDialog("Delete this post?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("Delete post", role: .destructive) {
+                Task { await deletePost() }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .alert("Done", isPresented: Binding(
+            get: { actionMessage != nil },
+            set: { if !$0 { actionMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { actionMessage = nil }
+        } message: {
+            Text(actionMessage ?? "")
+        }
+    }
+
+    private var postMenu: some View {
+        Menu {
+            if uid == livePost.authorId {
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    Label("Delete post", systemImage: "trash")
+                }
+            } else {
+                Button(role: .destructive) {
+                    showReportSheet = true
+                } label: {
+                    Label("Report post", systemImage: "exclamationmark.bubble")
+                }
+                Button(role: .destructive) {
+                    showBlockConfirm = true
+                } label: {
+                    Label("Block user", systemImage: "person.crop.circle.badge.xmark")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.borderless)
+    }
+
+    private func blockAuthor() async {
+        guard let uid, uid != livePost.authorId else { return }
+        do {
+            try await firestore.blockUser(currentUserId: uid, blockedUserId: livePost.authorId)
+            actionMessage = "You won’t see posts from this person anymore."
+        } catch {
+            actionMessage = "We couldn't block this user right now."
+        }
+    }
+
+    private func deletePost() async {
+        guard let uid, uid == livePost.authorId else { return }
+        do {
+            try await firestore.deleteOwnPost(postId: livePost.id, currentUserId: uid)
+            actionMessage = "Post deleted."
+        } catch {
+            actionMessage = "We couldn't delete this post right now."
         }
     }
 }

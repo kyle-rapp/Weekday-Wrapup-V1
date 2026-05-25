@@ -62,6 +62,15 @@ service cloud.firestore {
       allow read, update, delete: if false;
     }
 
+    match /reports/{reportId} {
+      allow create: if signedIn()
+        && request.resource.data.reporterUserId == request.auth.uid
+        && request.resource.data.reportId == reportId
+        && request.resource.data.status == 'open'
+        && request.resource.data.keys().hasAll(['reportId', 'reporterUserId', 'reason', 'createdAt', 'status']);
+      allow read, update, delete: if false;
+    }
+
     match /follows/{followId} {
       allow read: if signedIn();
       allow create: if signedIn()
@@ -114,6 +123,10 @@ service cloud.firestore {
         allow create, update, delete: if signedIn() && request.auth.uid == userId;
       }
 
+      match /blockedUsers/{blockedUserId} {
+        allow read, write: if signedIn() && request.auth.uid == userId;
+      }
+
       match /recommendationFeedback/{docId} {
         allow read: if signedIn() && request.auth.uid == userId;
         allow create: if signedIn() && request.auth.uid == userId;
@@ -128,10 +141,10 @@ service cloud.firestore {
       }
 
       match /insights/{docId} {
-        allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+        allow read, write: if signedIn() && request.auth.uid == userId;
 
         match /{subCollection}/{subDocId} {
-          allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+          allow read, write: if signedIn() && request.auth.uid == userId;
         }
       }
 

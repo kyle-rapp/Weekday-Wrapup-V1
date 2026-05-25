@@ -15,6 +15,7 @@ final class FirestoreManager: ObservableObject {
     @Published private(set) var posts: [FeedPost] = []
     @Published private(set) var detailComments: [Comment] = []
     @Published private(set) var followingIds: Set<String> = []
+    @Published private(set) var blockedUserIds: Set<String> = []
     /// Group ids the current user belongs to (for `PostVisibility.groups` feed filtering).
     @Published private(set) var joinedGroupIds: Set<String> = []
     @Published private(set) var myGroups: [SocialGroup] = []
@@ -33,9 +34,11 @@ final class FirestoreManager: ObservableObject {
     private var postsListener: ListenerRegistration?
     private var commentsListener: ListenerRegistration?
     private var followingListener: ListenerRegistration?
+    private var blockedUsersListener: ListenerRegistration?
     private var groupsListener: ListenerRegistration?
     private var activeCommentsPostId: String?
     private var activeFollowingUserId: String?
+    private var activeBlockedUsersUserId: String?
     private var activeGroupsUserId: String?
     private var lastDiscoverableLoadUserId: String?
     private var lastPublishedErrorMessage: String?
@@ -136,8 +139,10 @@ final class FirestoreManager: ObservableObject {
         stopPostsListener()
         stopCommentsListener()
         stopFollowingListener()
+        stopBlockedUsersListener()
         stopGroupsListener()
         followingIds = []
+        blockedUserIds = []
         joinedGroupIds = []
         myGroups = []
         discoverableGroups = []
@@ -190,7 +195,10 @@ final class FirestoreManager: ObservableObject {
         } else {
             cachedSimilarUserIds = []
         }
-        let visible = allPostsRaw.filter { Self.postMeetsVisibility($0, viewerId: uid, joinedGroupIds: joinedGroupIds) }
+        let visible = allPostsRaw.filter {
+            !blockedUserIds.contains($0.authorId)
+                && Self.postMeetsVisibility($0, viewerId: uid, joinedGroupIds: joinedGroupIds)
+        }
         posts = rankPostsForFeed(visible, viewerId: uid)
     }
 
@@ -877,6 +885,75 @@ final class FirestoreManager: ObservableObject {
         detailComments = []
     }
 
+    // MARK: - Blocking
+
+    func startBlockedUsersListener(userId: String) {
+        let authUid = Auth.auth().currentUser?.uid
+        #if DEBUG
+        print("[FIRESTORE][blockedUsers] authUid=\(authUid ?? "nil") requestedUid=\(userId) path=users/\(userId)/blockedUsers matchesAuth=\(authUid == userId)")
+        #endif
+        guard authUid == userId else {
+            #if DEBUG
+            print("[FIRESTORE][blockedUsers] listener skipped until Firebase Auth UID matches requested UID")
+            #endif
+            return
+        }
+        if activeBlockedUsersUserId == userId, blockedUsersListener != nil { return }
+        stopBlockedUsersListener()
+        activeBlockedUsersUserId = userId
+        blockedUsersListener = db.collection("users").document(userId).collection("blockedUsers")
+            .addSnapshotListener { [weak self] snapshot, error in
+                guard let self else { return }
+                if let error {
+                    Task { @MainActor in self.reportListenerError("Blocked users listener", error: error) }
+                    return
+                }
+                let ids = Set(snapshot?.documents.map(\.documentID) ?? [])
+                Task { @MainActor in
+                    self.blockedUserIds = ids
+                    self.applyPostVisibilityFilter()
+                }
+            }
+    }
+
+    func stopBlockedUsersListener() {
+        blockedUsersListener?.remove()
+        blockedUsersListener = nil
+        activeBlockedUsersUserId = nil
+        blockedUserIds = []
+    }
+
+    func blockUser(currentUserId: String, blockedUserId: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: currentUserId)
+        guard currentUserId != blockedUserId else { return }
+        try await runWrite(successLog: "User blocked") {
+            try await self.db.collection("users")
+                .document(currentUserId)
+                .collection("blockedUsers")
+                .document(blockedUserId)
+                .setData([
+                    "blockedUserId": blockedUserId,
+                    "createdAt": FieldValue.serverTimestamp()
+                ], merge: true)
+        }
+        blockedUserIds.insert(blockedUserId)
+        applyPostVisibilityFilter()
+    }
+
+    private func interactionBlockedBetween(actorId: String, otherUserId: String) async -> Bool {
+        guard actorId != otherUserId else { return false }
+        do {
+            async let actorBlockedOther = db.collection("users").document(actorId).collection("blockedUsers").document(otherUserId).getDocument()
+            async let otherBlockedActor = db.collection("users").document(otherUserId).collection("blockedUsers").document(actorId).getDocument()
+            let actorSnap = try await actorBlockedOther
+            let otherSnap = try await otherBlockedActor
+            return actorSnap.exists || otherSnap.exists
+        } catch {
+            AppLogger.error("interactionBlockedBetween failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
     /// Writes `posts/{postId}/comments/{id}` and increments `commentCount` on the post. Ignores whitespace-only text.
     func addComment(postId: String, userId: String, userName: String, text: String) async throws {
         _ = try requireAuthUser(matchingExpectedUid: userId)
@@ -890,6 +967,12 @@ final class FirestoreManager: ObservableObject {
         let postRef = db.collection("posts").document(postId)
         let postSnap = try await postRef.getDocument()
         let postData = postSnap.data() ?? [:]
+        if let authorId = (postData["authorId"] as? String) ?? (postData["userId"] as? String),
+           await interactionBlockedBetween(actorId: userId, otherUserId: authorId) {
+            let err = NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "You can't comment on this post."])
+            errorMessage = err.localizedDescription
+            throw err
+        }
         if postData["hideComments"] as? Bool == true {
             let err = NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "Comments are disabled for this post"])
             errorMessage = err.localizedDescription
@@ -924,6 +1007,12 @@ final class FirestoreManager: ObservableObject {
         let postRef = db.collection("posts").document(postId)
         let postSnap = try await postRef.getDocument()
         let postData = postSnap.data() ?? [:]
+        if let authorId = (postData["authorId"] as? String) ?? (postData["userId"] as? String),
+           await interactionBlockedBetween(actorId: userId, otherUserId: authorId) {
+            let err = NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "You can't reply to this post."])
+            errorMessage = err.localizedDescription
+            throw err
+        }
         if postData["hideComments"] as? Bool == true {
             let err = NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "Comments are disabled for this post"])
             errorMessage = err.localizedDescription
@@ -1243,14 +1332,9 @@ final class FirestoreManager: ObservableObject {
         do {
             async let queryUsers = db.collection("users").order(by: "name").limit(to: 80).getDocuments()
             async let myFollowingDocs = followingCollection(userId: user.id).getDocuments()
-            async let mySignatureSnap = insightsSignatureRef(userId: user.id).getDocument()
-            async let myProfileSnap = insightsProfileRef(userId: user.id).getDocument()
 
             let allUsers = try await queryUsers.documents
             let followingSet = Set(try await myFollowingDocs.documents.map(\.documentID))
-            let mySignature = parseSignature(document: try await mySignatureSnap)
-            let myProfileTags = parseHelpfulTags(document: try await myProfileSnap)
-            let myTopEmotions = Set(mySignature?.topEmotions.map { $0.lowercased() } ?? [])
 
             var candidates: [(AppUser, Double)] = []
             for doc in allUsers {
@@ -1258,18 +1342,15 @@ final class FirestoreManager: ObservableObject {
                 guard !followingSet.contains(doc.documentID) else { continue }
                 guard let appUser = appUserFromDocument(id: doc.documentID, data: doc.data()) else { continue }
 
-                async let theirSignatureSnap = insightsSignatureRef(userId: appUser.id).getDocument()
-                async let theirProfileSnap = insightsProfileRef(userId: appUser.id).getDocument()
                 async let theirFollowerCount = fetchFollowerCount(userId: appUser.id)
                 async let theirFollowingDocs = followingCollection(userId: appUser.id).limit(to: 120).getDocuments()
 
-                let theirSignature = parseSignature(document: try await theirSignatureSnap)
-                let theirTags = parseHelpfulTags(document: try await theirProfileSnap)
-                let theirsTopEmotions = Set(theirSignature?.topEmotions.map { $0.lowercased() } ?? [])
                 let theirFollowingSet = Set((try await theirFollowingDocs).documents.map(\.documentID))
 
-                let emotionOverlap = Double(myTopEmotions.intersection(theirsTopEmotions).count)
-                let sharedHelpfulTags = Double(myProfileTags.intersection(theirTags).count)
+                // Other users' private insights are intentionally not read here; Firestore rules keep
+                // `users/{uid}/insights/*` owner-only to avoid leaking emotional profile data.
+                let emotionOverlap = 0.0
+                let sharedHelpfulTags = 0.0
                 let mutualConnectionsWeight = Double(followingSet.intersection(theirFollowingSet).count)
                 let activityWeight = min(Double(try await theirFollowerCount), 25.0) / 25.0
 
@@ -2257,6 +2338,16 @@ final class FirestoreManager: ObservableObject {
 
     func fetchUserHelpfulProfile(userId: String) async -> [String: Int] {
         if Self.isXcodePreview { return [:] }
+        let authUid = Auth.auth().currentUser?.uid
+        #if DEBUG
+        print("[FIRESTORE][insights/profile] authUid=\(authUid ?? "nil") requestedUid=\(userId) path=users/\(userId)/insights/profile matchesAuth=\(authUid == userId)")
+        #endif
+        guard authUid == userId else {
+            #if DEBUG
+            print("[FIRESTORE][insights/profile] read skipped because requested UID is not the signed-in Firebase Auth UID")
+            #endif
+            return [:]
+        }
         do {
             let snap = try await helpfulInsightsProfileRef(userId: userId).getDocument()
             guard let data = snap.data(),
@@ -2269,7 +2360,9 @@ final class FirestoreManager: ObservableObject {
             }
             return counts
         } catch {
-            AppLogger.error("fetchUserHelpfulProfile failed: \(error.localizedDescription)")
+            if !error.localizedDescription.lowercased().contains("permission") {
+                AppLogger.error("fetchUserHelpfulProfile failed: \(error.localizedDescription)")
+            }
             return [:]
         }
     }
@@ -2428,17 +2521,62 @@ final class FirestoreManager: ObservableObject {
         }
     }
 
-    /// Lightweight moderation signal — `userReports/{autoId}`.
-    func submitUserReport(reporterId: String, reportedUserId: String, reason: String?) async throws {
-        _ = try requireAuthUser(matchingExpectedUid: reporterId)
-        try await runWrite(successLog: "User report submitted") {
-            _ = try await self.db.collection("userReports").addDocument(data: [
-                "reporterId": reporterId,
-                "reportedUserId": reportedUserId,
-                "reason": reason ?? "",
-                "createdAt": FieldValue.serverTimestamp()
-            ])
+    /// Beta moderation signal — `reports/{reportId}`.
+    func submitReport(
+        reporterUserId: String,
+        target: ReportTarget,
+        reason: String,
+        details: String?
+    ) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: reporterUserId)
+        try await runWrite(successLog: "Report submitted") {
+            let ref = self.db.collection("reports").document()
+            var payload: [String: Any] = [
+                "reportId": ref.documentID,
+                "reporterUserId": reporterUserId,
+                "reason": reason,
+                "createdAt": FieldValue.serverTimestamp(),
+                "status": "open"
+            ]
+            if let reportedUserId = target.reportedUserId, !reportedUserId.isEmpty {
+                payload["reportedUserId"] = reportedUserId
+            }
+            if let reportedPostId = target.reportedPostId, !reportedPostId.isEmpty {
+                payload["reportedPostId"] = reportedPostId
+            }
+            if let reportedCommentId = target.reportedCommentId, !reportedCommentId.isEmpty {
+                payload["reportedCommentId"] = reportedCommentId
+            }
+            let cleanDetails = details?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !cleanDetails.isEmpty {
+                payload["details"] = cleanDetails
+            }
+            try await ref.setData(payload, merge: true)
         }
+    }
+
+    func submitUserReport(reporterId: String, reportedUserId: String, reason: String?) async throws {
+        try await submitReport(
+            reporterUserId: reporterId,
+            target: ReportTarget(reportedUserId: reportedUserId),
+            reason: reason ?? ReportReason.other.rawValue,
+            details: nil
+        )
+    }
+
+    func deleteOwnPost(postId: String, currentUserId: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: currentUserId)
+        let ref = db.collection("posts").document(postId)
+        let snap = try await ref.getDocument()
+        let authorId = (snap.data()?["authorId"] as? String) ?? (snap.data()?["userId"] as? String)
+        guard authorId == currentUserId else {
+            throw NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "You can only delete your own posts."])
+        }
+        try await runWrite(successLog: "Post deleted") {
+            try await ref.delete()
+        }
+        allPostsRaw.removeAll { $0.id == postId }
+        applyPostVisibilityFilter()
     }
 
     // MARK: - Helpers (shared with FeedPost mapping)

@@ -185,13 +185,14 @@ struct FindFriendsView: View {
         loading = true
         let users = await firestore.searchUsers(query: query)
         let me = auth.currentUser?.id
-        results = users.filter { $0.id != me }
+        results = users.filter { $0.id != me && !firestore.blockedUserIds.contains($0.id) }
         loading = false
     }
 
     private func loadRecommendations() async {
         guard let current = auth.currentUser else { return }
         suggested = await firestore.recommendUsers(for: current)
+            .filter { !firestore.blockedUserIds.contains($0.id) }
     }
 
     private func toggleFollow(userId: String) async {

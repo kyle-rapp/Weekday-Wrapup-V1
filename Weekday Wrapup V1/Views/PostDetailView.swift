@@ -19,6 +19,9 @@ struct PostDetailView: View {
     /// Author onboarding stressors (optional) for resource scoring.
     @State private var authorStressors: [String] = []
     @State private var showInviteSheet = false
+    @State private var showReportSheet = false
+    @State private var showBlockConfirm = false
+    @State private var showDeleteConfirm = false
 
     private var uid: String? { auth.currentUser?.id }
     private var livePost: FeedPost {
@@ -243,6 +246,11 @@ struct PostDetailView: View {
         .background(detailBackground.ignoresSafeArea())
         .navigationTitle("Post")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                postActionsMenu
+            }
+        }
         .onAppear {
             feedViewModel.clearReplyTarget()
             firestore.startCommentsListener(postId: post.id)
@@ -279,11 +287,80 @@ struct PostDetailView: View {
                 recipientUserId: livePost.authorId
             )
         }
+        .sheet(isPresented: $showReportSheet) {
+            ReportSheetView(
+                title: "Report post",
+                target: ReportTarget(reportedUserId: livePost.authorId, reportedPostId: livePost.id)
+            ) {
+                presentAlert("Thanks for letting us know. We'll review this.")
+            }
+            .environmentObject(auth)
+            .environmentObject(firestore)
+        }
+        .confirmationDialog("Block this user?", isPresented: $showBlockConfirm, titleVisibility: .visible) {
+            Button("Block user", role: .destructive) {
+                Task { await blockAuthor() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You won’t see posts from this person anymore.")
+        }
+        .confirmationDialog("Delete this post?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("Delete post", role: .destructive) {
+                Task { await deletePost() }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
     private func presentAlert(_ message: String) {
         alertMessage = message
         showErrorAlert = true
+    }
+
+    private var postActionsMenu: some View {
+        Menu {
+            if isAuthor {
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    Label("Delete post", systemImage: "trash")
+                }
+            } else {
+                Button(role: .destructive) {
+                    showReportSheet = true
+                } label: {
+                    Label("Report post", systemImage: "exclamationmark.bubble")
+                }
+                Button(role: .destructive) {
+                    showBlockConfirm = true
+                } label: {
+                    Label("Block user", systemImage: "person.crop.circle.badge.xmark")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+    }
+
+    private func blockAuthor() async {
+        guard let uid, uid != livePost.authorId else { return }
+        do {
+            try await firestore.blockUser(currentUserId: uid, blockedUserId: livePost.authorId)
+            presentAlert("You won’t see posts from this person anymore.")
+        } catch {
+            presentAlert("We couldn't block this user right now.")
+        }
+    }
+
+    private func deletePost() async {
+        guard let uid, uid == livePost.authorId else { return }
+        do {
+            try await firestore.deleteOwnPost(postId: livePost.id, currentUserId: uid)
+            presentAlert("Post deleted.")
+        } catch {
+            presentAlert("We couldn't delete this post right now.")
+        }
     }
 
     private var headerRow: some View {
@@ -461,7 +538,10 @@ private struct FeedCommentRow: View {
     let comment: Comment
     var depth: Int = 0
     @EnvironmentObject private var auth: AuthManager
+    @EnvironmentObject private var firestore: FirestoreManager
     @EnvironmentObject private var feedViewModel: FeedViewModel
+    @State private var showReportSheet = false
+    @State private var showReportThanks = false
 
     private var currentUserId: String? { auth.currentUser?.id }
 
@@ -486,6 +566,17 @@ private struct FeedCommentRow: View {
                 Text(RelativeTimeFormat.string(for: comment.createdAt))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+                Menu {
+                    Button(role: .destructive) {
+                        showReportSheet = true
+                    } label: {
+                        Label("Report comment", systemImage: "exclamationmark.bubble")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
             }
             Text(comment.text)
                 .font(.subheadline)
@@ -533,6 +624,23 @@ private struct FeedCommentRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.orange.opacity(0.08)))
         .padding(.leading, depth == 0 ? 0 : CGFloat(min(depth, 6) * 4))
+        .sheet(isPresented: $showReportSheet) {
+            ReportSheetView(
+                title: "Report comment",
+                target: ReportTarget(
+                    reportedUserId: comment.userId,
+                    reportedPostId: postId,
+                    reportedCommentId: comment.id
+                )
+            ) {
+                showReportThanks = true
+            }
+            .environmentObject(auth)
+            .environmentObject(firestore)
+        }
+        .alert("Thanks for letting us know. We'll review this.", isPresented: $showReportThanks) {
+            Button("OK", role: .cancel) {}
+        }
     }
 
     @ViewBuilder

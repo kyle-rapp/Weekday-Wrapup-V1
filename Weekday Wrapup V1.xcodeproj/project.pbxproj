@@ -10,6 +10,7 @@
 		8D3C5A512F7A372D00B0687C /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = FBA09E001224DD00001A0002 /* FirebaseAuth */; };
 		8D3C5A522F7A372D00B0687C /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = FBA09E001224DD00001A0003 /* FirebaseFirestore */; };
 		8D3C5ACD2F7A37F700B0687C /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = FBA09E001224DD00001A0004 /* FirebaseCore */; };
+		8D3C5CB12FA703DB00B0687C /* FirebaseCrashlytics in Frameworks */ = {isa = PBXBuildFile; productRef = 8D3C5CB22FA703DB00B0687C /* FirebaseCrashlytics */; };
 		8D3C5EA92FA6FD7700B0687C /* FirebaseDatabase in Frameworks */ = {isa = PBXBuildFile; productRef = 8D3C5EA82FA6FD7700B0687C /* FirebaseDatabase */; };
 		8D3C5EAC2FA703DB00B0687C /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 8D3C5EAB2FA703DB00B0687C /* FirebaseStorage */; };
 		A1B0WK012F7A620000B0687C /* WeatherKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1B0WK022F7A620000B0687C /* WeatherKit.framework */; };
@@ -64,6 +65,7 @@
 			files = (
 				8D3C5EA92FA6FD7700B0687C /* FirebaseDatabase in Frameworks */,
 				8D3C5ACD2F7A37F700B0687C /* FirebaseCore in Frameworks */,
+				8D3C5CB12FA703DB00B0687C /* FirebaseCrashlytics in Frameworks */,
 				8D3C5A522F7A372D00B0687C /* FirebaseFirestore in Frameworks */,
 				8D3C5A512F7A372D00B0687C /* FirebaseAuth in Frameworks */,
 				A1B0WK012F7A620000B0687C /* WeatherKit.framework in Frameworks */,
@@ -135,6 +137,7 @@
 				99D876802D0E80D1001224DD /* Sources */,
 				99D876812D0E80D1001224DD /* Frameworks */,
 				99D876822D0E80D1001224DD /* Resources */,
+				8D3C5CB32FA703DB00B0687C /* Upload Crashlytics Symbols */,
 			);
 			buildRules = (
 			);
@@ -148,6 +151,7 @@
 				FBA09E001224DD00001A0002 /* FirebaseAuth */,
 				FBA09E001224DD00001A0003 /* FirebaseFirestore */,
 				FBA09E001224DD00001A0004 /* FirebaseCore */,
+				8D3C5CB22FA703DB00B0687C /* FirebaseCrashlytics */,
 				8D3C5EA82FA6FD7700B0687C /* FirebaseDatabase */,
 				8D3C5EAB2FA703DB00B0687C /* FirebaseStorage */,
 			);
@@ -273,6 +277,32 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		8D3C5CB32FA703DB00B0687C /* Upload Crashlytics Symbols */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}/Contents/Resources/DWARF/${TARGET_NAME}",
+				"${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}/Contents/Info.plist",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GoogleService-Info.plist",
+				"$(TARGET_BUILD_DIR)/$(EXECUTABLE_PATH)",
+			);
+			name = "Upload Crashlytics Symbols";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "RUN_SCRIPT=\"${BUILD_DIR%/Build/*}/SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/run\"\nif [ -x \"$RUN_SCRIPT\" ]; then\n  \"$RUN_SCRIPT\"\nelse\n  echo \"Crashlytics run script not found at $RUN_SCRIPT\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		99D876802D0E80D1001224DD /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -345,7 +375,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -631,6 +661,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = FBA09E001224DD00001A0001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseDatabase;
+		};
+		8D3C5CB22FA703DB00B0687C /* FirebaseCrashlytics */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FBA09E001224DD00001A0001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseCrashlytics;
 		};
 		8D3C5EAB2FA703DB00B0687C /* FirebaseStorage */ = {
 			isa = XCSwiftPackageProductDependency;

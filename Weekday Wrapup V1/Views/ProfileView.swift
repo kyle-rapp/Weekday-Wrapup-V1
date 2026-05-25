@@ -25,6 +25,10 @@ struct ProfileView: View {
     @State private var insightEditorText = ""
     @State private var insightError: String?
     @State private var showReportConfirm = false
+    @State private var showReportSheet = false
+    @State private var showBlockConfirm = false
+    @State private var showSafetyAlert = false
+    @State private var safetyAlertText = ""
     @State private var reportInFlight = false
     @State private var isFriend = false
     @State private var showMessageSheet = false
@@ -182,6 +186,11 @@ struct ProfileView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Edit profile") { showEditor = true }
+                        NavigationLink {
+                            CommunityGuidelinesView()
+                        } label: {
+                            Label("Community Guidelines", systemImage: "heart.text.square")
+                        }
                         Button("Log out", role: .destructive) {
                             Task { await auth.signOut() }
                         }
@@ -194,9 +203,14 @@ struct ProfileView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button(role: .destructive) {
-                            showReportConfirm = true
+                            showReportSheet = true
                         } label: {
                             Label("Report user", systemImage: "exclamationmark.bubble")
+                        }
+                        Button(role: .destructive) {
+                            showBlockConfirm = true
+                        } label: {
+                            Label("Block user", systemImage: "person.crop.circle.badge.xmark")
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
@@ -210,6 +224,28 @@ struct ProfileView: View {
                 Task { await submitReport() }
             }
             Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Block this user?", isPresented: $showBlockConfirm, titleVisibility: .visible) {
+            Button("Block user", role: .destructive) {
+                Task { await blockProfileUser() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You won’t see posts from this person anymore.")
+        }
+        .sheet(isPresented: $showReportSheet) {
+            ReportSheetView(
+                title: "Report user",
+                target: ReportTarget(reportedUserId: userId)
+            ) {
+                safetyAlertText = "Thanks for letting us know. We'll review this."
+                showSafetyAlert = true
+            }
+            .environmentObject(auth)
+            .environmentObject(firestore)
+        }
+        .alert(safetyAlertText, isPresented: $showSafetyAlert) {
+            Button("OK", role: .cancel) {}
         }
         .sheet(isPresented: $showInsightEditor) {
             NavigationStack {
@@ -1166,6 +1202,18 @@ struct ProfileView: View {
             try await firestore.submitUserReport(reporterId: rid, reportedUserId: userId, reason: "profile_report")
         } catch {
             print("⚠️ report: \(error.localizedDescription)")
+        }
+    }
+
+    private func blockProfileUser() async {
+        guard let uid = auth.currentUser?.id, uid != userId else { return }
+        do {
+            try await firestore.blockUser(currentUserId: uid, blockedUserId: userId)
+            safetyAlertText = "You won’t see posts from this person anymore."
+            showSafetyAlert = true
+        } catch {
+            safetyAlertText = "We couldn't block this user right now."
+            showSafetyAlert = true
         }
     }
 
