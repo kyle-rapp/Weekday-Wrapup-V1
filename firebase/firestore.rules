@@ -8,12 +8,22 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
     match /posts/{postId} {
       allow read: if signedIn();
       allow create: if signedIn()
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.authorId == request.auth.uid;
-      allow update: if signedIn();
+      allow update: if signedIn()
+        && (
+          resource.data.authorId == request.auth.uid
+          || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likedBy', 'likeCount'])
+          || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions', 'userReactions'])
+          || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['commentCount'])
+        );
       allow delete: if signedIn() && resource.data.authorId == request.auth.uid;
 
       match /comments/{commentId} {
@@ -77,7 +87,25 @@ service cloud.firestore {
         && request.resource.data.followerId == request.auth.uid
         && request.resource.data.keys().hasAll(['followerId', 'followingId', 'createdAt']);
       allow delete: if signedIn() && resource.data.followerId == request.auth.uid;
-      allow update: if false;
+      // Client uses setData(merge: true) when re-following after unfollow.
+      allow update: if signedIn()
+        && resource.data.followerId == request.auth.uid
+        && request.resource.data.followerId == request.auth.uid;
+    }
+
+    match /following/{userId}/userFollowing/{targetUid} {
+      allow read: if signedIn();
+      allow create, update: if isOwner(userId)
+        && targetUid != userId
+        && request.resource.data.followingId == targetUid;
+      allow delete: if isOwner(userId);
+    }
+
+    match /followers/{userId}/userFollowers/{followerUid} {
+      allow read: if signedIn();
+      // Follower writes their own edge doc; document id must match auth uid.
+      allow create, update: if signedIn() && request.auth.uid == followerUid;
+      allow delete: if signedIn() && request.auth.uid == followerUid;
     }
 
     match /groups/{groupId} {
@@ -92,6 +120,18 @@ service cloud.firestore {
             resource.data.keys().hasAny(['adminIds'])
             && request.auth.uid in resource.data.adminIds
           )
+          || (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds'])
+            && (
+              (!(request.auth.uid in resource.data.memberIds) && request.auth.uid in request.resource.data.memberIds)
+              || (request.auth.uid in resource.data.memberIds && !(request.auth.uid in request.resource.data.memberIds))
+            )
+          )
+          || (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds', 'adminIds'])
+            && request.auth.uid in resource.data.memberIds
+            && !(request.auth.uid in request.resource.data.memberIds)
+          )
         );
       allow delete: if signedIn()
         && request.auth.uid == resource.data.ownerId;
@@ -99,7 +139,7 @@ service cloud.firestore {
 
     match /default_groups/{groupId} {
       allow read: if signedIn();
-      allow create, update, delete: if signedIn();
+      allow write: if false;
     }
 
     match /dopamineMenus/{userId} {
@@ -111,7 +151,8 @@ service cloud.firestore {
       // `read` = get + list for collections; authenticated members can read profiles.
       allow read: if signedIn();
       // Owner-only writes on the user root document (merge updates, display name, etc.).
-      allow create, update, delete: if signedIn() && request.auth.uid == userId;
+      allow create, delete: if isOwner(userId);
+      allow update: if isOwner(userId);
 
       match /profile/{docId} {
         allow read: if signedIn();
@@ -123,8 +164,12 @@ service cloud.firestore {
         allow create, update, delete: if signedIn() && request.auth.uid == userId;
       }
 
+      // Owner manages their block list. Others may read only the doc keyed with their own uid
+      // (e.g. users/{otherUid}/blockedUsers/{myUid}) to enforce mutual messaging blocks.
       match /blockedUsers/{blockedUserId} {
-        allow read, write: if signedIn() && request.auth.uid == userId;
+        allow read: if isOwner(userId)
+          || (signedIn() && request.auth.uid == blockedUserId);
+        allow write: if isOwner(userId);
       }
 
       match /recommendationFeedback/{docId} {
@@ -140,12 +185,8 @@ service cloud.firestore {
         allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
       }
 
-      match /insights/{docId} {
-        allow read, write: if signedIn() && request.auth.uid == userId;
-
-        match /{subCollection}/{subDocId} {
-          allow read, write: if signedIn() && request.auth.uid == userId;
-        }
+      match /insights/{document=**} {
+        allow read, write: if isOwner(userId);
       }
 
       match /adaptiveProfile/{docId} {
@@ -153,7 +194,7 @@ service cloud.firestore {
       }
 
       match /eventStream/{docId} {
-        allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+        allow read, write: if isOwner(userId);
       }
 
       match /support/{docId} {
@@ -166,6 +207,26 @@ service cloud.firestore {
           && request.resource.data.fromUserId == request.auth.uid
           && request.resource.data.keys().hasAll(['fromUserId', 'type', 'createdAt']);
         allow update, delete: if signedIn() && request.auth.uid == userId;
+      }
+    }
+
+    match /conversations/{conversationId} {
+      // `read` covers get + list; queries must filter by participantIds containing auth uid.
+      allow read: if signedIn() && request.auth.uid in resource.data.participantIds;
+      allow create: if signedIn()
+        && request.auth.uid in request.resource.data.participantIds
+        && request.resource.data.participantIds.size() == 2
+        && request.resource.data.keys().hasAll(['participantIds', 'updatedAt']);
+      allow update: if signedIn() && request.auth.uid in resource.data.participantIds;
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if signedIn()
+          && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
+        allow create: if signedIn()
+          && request.resource.data.senderId == request.auth.uid
+          && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
+        allow update, delete: if false;
       }
     }
   }

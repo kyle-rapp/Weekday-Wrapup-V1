@@ -30,6 +30,9 @@ struct PostDetailView: View {
     private var isAuthor: Bool {
         uid == livePost.authorId
     }
+    private var likesAllowed: Bool {
+        livePost.commentsEnabled || !livePost.hideReactions
+    }
 
     private var isFollowingAuthor: Bool {
         firestore.isFollowing(livePost.authorId)
@@ -146,7 +149,7 @@ struct PostDetailView: View {
                         }
                     }
 
-                    if !livePost.hideReactions || isAuthor {
+                    if !livePost.hideReactions {
                         FeedReactionRow(
                             livePost: livePost,
                             uid: uid,
@@ -162,37 +165,41 @@ struct PostDetailView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    HStack(spacing: 20) {
-                        Button {
-                            guard let uid else { return }
-                            Task { @MainActor in
-                                do {
-                                    try await firestore.toggleLike(postId: livePost.id, userId: uid)
-                                } catch {
-                                    print("❌ Like failed: \(error.localizedDescription)")
-                                    presentAlert(error.localizedDescription)
-                                    firestore.clearErrorMessage()
+                    if likesAllowed || livePost.commentsEnabled {
+                        HStack(spacing: 20) {
+                            if likesAllowed {
+                                Button {
+                                    guard let uid else { return }
+                                    Task { @MainActor in
+                                        do {
+                                            try await firestore.toggleLike(postId: livePost.id, userId: uid)
+                                        } catch {
+                                            print("❌ Like failed: \(error.localizedDescription)")
+                                            presentAlert(error.localizedDescription)
+                                            firestore.clearErrorMessage()
+                                        }
+                                    }
+                                } label: {
+                                    Label("\(livePost.likeCount) Like\(livePost.likeCount == 1 ? "" : "s")", systemImage: livePost.isLikedByCurrentUser(uid) ? "heart.fill" : "heart")
+                                        .foregroundStyle(livePost.isLikedByCurrentUser(uid) ? .pink : .primary)
                                 }
+                                .buttonStyle(.borderless)
+                                .disabled(uid == nil)
+                                .scaleEffect(livePost.isLikedByCurrentUser(uid) ? 1.12 : 1.0)
+                                .animation(.spring(response: 0.35, dampingFraction: 0.62), value: livePost.isLikedByCurrentUser(uid))
                             }
-                        } label: {
-                            Label("\(livePost.likeCount) Like\(livePost.likeCount == 1 ? "" : "s")", systemImage: livePost.isLikedByCurrentUser(uid) ? "heart.fill" : "heart")
-                                .foregroundStyle(livePost.isLikedByCurrentUser(uid) ? .pink : .primary)
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(uid == nil)
-                        .scaleEffect(livePost.isLikedByCurrentUser(uid) ? 1.12 : 1.0)
-                        .animation(.spring(response: 0.35, dampingFraction: 0.62), value: livePost.isLikedByCurrentUser(uid))
 
-                        if livePost.commentsEnabled || isAuthor {
-                            Label("\(livePost.commentCount) Comment\(livePost.commentCount == 1 ? "" : "s")", systemImage: "bubble.right.fill")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
+                            if livePost.commentsEnabled {
+                                Label("\(livePost.commentCount) Comment\(livePost.commentCount == 1 ? "" : "s")", systemImage: "bubble.right.fill")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
 
-                        Spacer()
+                            Spacer()
+                        }
                     }
 
-                    if livePost.commentsEnabled || isAuthor {
+                    if livePost.commentsEnabled {
                         Divider()
                             .padding(.vertical, 4)
 
@@ -227,7 +234,7 @@ struct PostDetailView: View {
             .simultaneousGesture(
                 LongPressGesture(minimumDuration: 0.45)
                     .onEnded { _ in
-                        guard !livePost.hideReactions || isAuthor else { return }
+                        guard !livePost.hideReactions else { return }
                         guard uid != nil else { return }
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                         withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {

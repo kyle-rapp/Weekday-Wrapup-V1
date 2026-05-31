@@ -23,6 +23,7 @@ struct GrowView: View {
     @State private var safetyCardDismissed = false
     @State private var therapyResourcesDismissed = false
     @State private var showManualEntrySheet = false
+    @State private var selectedRecommendationDetail: Recommendation?
     private let dopamineMenuAnchorId = "grow_dopamine_menu_anchor"
     private var eventStream: EmotionalEventStreamService {
         EmotionalEventStreamService(firestore: firestore)
@@ -150,6 +151,15 @@ struct GrowView: View {
                         Task { await saveManualCalendarEntry(date: date, emotion: emotion, intensity: intensity, note: note) }
                     }
                 }
+            }
+            .sheet(item: $selectedRecommendationDetail) { recommendation in
+                RecommendationDetailSheetView(
+                    recommendation: recommendation,
+                    selectedFeedback: recommendationFeedback[recommendation.id],
+                    onFeedback: { helpful in
+                        Task { await submitFeedback(recommendation, helpful: helpful) }
+                    }
+                )
             }
             .onChange(of: showPreferencesOnboarding) { _, isShown in
                 if isShown {
@@ -633,6 +643,7 @@ struct GrowView: View {
                         selectedFeedback: recommendationFeedback[rec.id],
                         onStart: {
                             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            selectedRecommendationDetail = rec
                             guard let uid = auth.currentUser?.id else { return }
                             Task {
                                 await eventStream.logRecommendationInteraction(

@@ -93,7 +93,11 @@ final class FirestoreManager: ObservableObject {
         return user
     }
 
-    private func runWrite<T>(successLog: String, operation: () async throws -> T) async throws -> T {
+    private func runWrite<T>(
+        successLog: String,
+        shouldPublishUserFacingError: Bool = true,
+        operation: () async throws -> T
+    ) async throws -> T {
         do {
             let value = try await operation()
             errorMessage = nil
@@ -102,7 +106,9 @@ final class FirestoreManager: ObservableObject {
         } catch {
             let technicalMessage = error.localizedDescription
             AppLogger.error("[FIRESTORE] Write failed: \(technicalMessage)")
-            publishUserFacingError(from: error)
+            if shouldPublishUserFacingError {
+                publishUserFacingError(from: error)
+            }
             throw error
         }
     }
@@ -372,6 +378,29 @@ final class FirestoreManager: ObservableObject {
             let ids = post.sharedGroupIds
             guard !ids.isEmpty else { return false }
             return ids.contains(where: { joinedGroupIds.contains($0) })
+        }
+    }
+
+    func filterPostsForFeedPreferences(
+        _ items: [FeedPost],
+        currentUserId: String?,
+        includeFriends: Bool,
+        includeGroups: Bool,
+        includePublic: Bool
+    ) -> [FeedPost] {
+        guard let currentUserId else { return [] }
+        return items.filter { post in
+            if post.authorId == currentUserId { return true }
+            switch post.visibility {
+            case .public:
+                return includePublic
+            case .friends:
+                return includeFriends && followingIds.contains(post.authorId)
+            case .groups:
+                return includeGroups
+            case .private:
+                return false
+            }
         }
     }
 
@@ -749,12 +778,8 @@ final class FirestoreManager: ObservableObject {
             .getDocuments()
 
         if let doc = existing.documents.first {
-            let description = (doc.data()["description"] as? String) ?? "Low-pressure support community"
             try await doc.reference.updateData([
-                "memberIds": FieldValue.arrayUnion([userId]),
-                "category": DefaultGroups.categoryForGroup(named: trimmedName),
-                "tags": DefaultGroups.tagsForGroup(name: trimmedName, description: description),
-                "searchKeywords": DefaultGroups.searchKeywordsForGroup(name: trimmedName, description: description)
+                "memberIds": FieldValue.arrayUnion([userId])
             ])
             return
         }
@@ -768,6 +793,35 @@ final class FirestoreManager: ObservableObject {
             ownerId: userId,
             allowHistoryAccessForNewMembers: false
         )
+    }
+
+    func leaveGroup(group: SocialGroup, userId: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+        let ref = db.collection("groups").document(group.id)
+        let snap = try await ref.getDocument()
+        guard let data = snap.data() else {
+            throw NSError(domain: "FirestoreManager", code: 404, userInfo: [NSLocalizedDescriptionKey: "Group not found"])
+        }
+        let owner = (data["ownerId"] as? String) ?? (data["createdBy"] as? String) ?? ""
+        var members = Set(data["memberIds"] as? [String] ?? group.memberIds)
+        guard members.contains(userId) else { return }
+
+        try await runWrite(successLog: "Left group") {
+            if owner == userId && members.count <= 1 {
+                try await ref.delete()
+            } else {
+                members.remove(userId)
+                var update: [String: Any] = ["memberIds": Array(members)]
+                if var admins = data["adminIds"] as? [String] {
+                    admins.removeAll { $0 == userId }
+                    update["adminIds"] = admins
+                }
+                try await ref.updateData(update)
+            }
+        }
+        myGroups.removeAll { $0.id == group.id }
+        joinedGroupIds.remove(group.id)
+        applyPostVisibilityFilter()
     }
 
     /// Best-effort: finds users whose `name` field matches exactly (case-sensitive as stored).
@@ -940,9 +994,14 @@ final class FirestoreManager: ObservableObject {
         applyPostVisibilityFilter()
     }
 
-    private func interactionBlockedBetween(actorId: String, otherUserId: String) async -> Bool {
+    private func interactionBlockedBetween(actorId: String, otherUserId: String) async throws -> Bool {
         guard actorId != otherUserId else { return false }
+        if actorId == Auth.auth().currentUser?.uid, blockedUserIds.contains(otherUserId) {
+            return true
+        }
         do {
+            // Owner read: users/{actorId}/blockedUsers/{otherUserId}
+            // Cross-user read (rules allow doc id == auth uid): users/{otherUserId}/blockedUsers/{actorId}
             async let actorBlockedOther = db.collection("users").document(actorId).collection("blockedUsers").document(otherUserId).getDocument()
             async let otherBlockedActor = db.collection("users").document(otherUserId).collection("blockedUsers").document(actorId).getDocument()
             let actorSnap = try await actorBlockedOther
@@ -950,7 +1009,7 @@ final class FirestoreManager: ObservableObject {
             return actorSnap.exists || otherSnap.exists
         } catch {
             AppLogger.error("interactionBlockedBetween failed: \(error.localizedDescription)")
-            return false
+            throw error
         }
     }
 
@@ -968,7 +1027,7 @@ final class FirestoreManager: ObservableObject {
         let postSnap = try await postRef.getDocument()
         let postData = postSnap.data() ?? [:]
         if let authorId = (postData["authorId"] as? String) ?? (postData["userId"] as? String),
-           await interactionBlockedBetween(actorId: userId, otherUserId: authorId) {
+           try await interactionBlockedBetween(actorId: userId, otherUserId: authorId) {
             let err = NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "You can't comment on this post."])
             errorMessage = err.localizedDescription
             throw err
@@ -1008,7 +1067,7 @@ final class FirestoreManager: ObservableObject {
         let postSnap = try await postRef.getDocument()
         let postData = postSnap.data() ?? [:]
         if let authorId = (postData["authorId"] as? String) ?? (postData["userId"] as? String),
-           await interactionBlockedBetween(actorId: userId, otherUserId: authorId) {
+           try await interactionBlockedBetween(actorId: userId, otherUserId: authorId) {
             let err = NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "You can't reply to this post."])
             errorMessage = err.localizedDescription
             throw err
@@ -1134,6 +1193,31 @@ final class FirestoreManager: ObservableObject {
 
     private func followingCollection(userId: String) -> CollectionReference {
         db.collection("following").document(userId).collection("userFollowing")
+    }
+
+    private struct FollowBatchWritePlan {
+        let operation: String
+        let path: String
+        let payloadKeys: [String]
+        let pathOwnerUid: String?
+    }
+
+    /// Logs every planned follow-batch write before commit (DEBUG builds only).
+    private func logFollowBatchPlan(_ writes: [FollowBatchWritePlan], authUid: String) {
+        #if DEBUG
+        print("[FOLLOW_BATCH] authUid=\(authUid) plannedWrites=\(writes.count)")
+        for write in writes {
+            let ownerMatchesAuth: Bool = {
+                guard let pathOwnerUid = write.pathOwnerUid else { return false }
+                return pathOwnerUid == authUid
+            }()
+            print(
+                "[FOLLOW_BATCH] op=\(write.operation) path=\(write.path) "
+                + "keys=[\(write.payloadKeys.sorted().joined(separator: ","))] "
+                + "pathOwner=\(write.pathOwnerUid ?? "n/a") ownerMatchesAuth=\(ownerMatchesAuth)"
+            )
+        }
+        #endif
     }
 
     private func insightsSignatureRef(userId: String) -> DocumentReference {
@@ -1443,10 +1527,11 @@ final class FirestoreManager: ObservableObject {
 
     func followUser(currentUserId: String, targetUserId: String) async throws {
         guard currentUserId != targetUserId else { return }
-        _ = try requireAuthUser(matchingExpectedUid: currentUserId)
-        try await runWrite(successLog: "Now following user") {
+        let authUser = try requireAuthUser(matchingExpectedUid: currentUserId)
+        followingIds.insert(targetUserId)
+        do {
+            try await runWrite(successLog: "Now following user", shouldPublishUserFacingError: false) {
             let currentRef = self.db.collection("users").document(currentUserId)
-            let targetRef = self.db.collection("users").document(targetUserId)
             let followDocId = "\(currentUserId)__\(targetUserId)"
             let legacyFollowRef = self.db.collection("follows").document(followDocId)
             let followerEdgeRef = self.followersCollection(userId: targetUserId).document(currentUserId)
@@ -1457,38 +1542,71 @@ final class FirestoreManager: ObservableObject {
                 return
             }
 
+            let followerPayload: [String: Any] = [
+                "followerId": currentUserId,
+                "createdAt": FieldValue.serverTimestamp()
+            ]
+            let followingPayload: [String: Any] = [
+                "followingId": targetUserId,
+                "createdAt": FieldValue.serverTimestamp()
+            ]
+            let legacyPayload: [String: Any] = [
+                "followerId": currentUserId,
+                "followingId": targetUserId,
+                "createdAt": FieldValue.serverTimestamp()
+            ]
+            let currentUserPayload: [String: Any] = [
+                "following": FieldValue.arrayUnion([targetUserId])
+            ]
+
+            self.logFollowBatchPlan([
+                FollowBatchWritePlan(
+                    operation: "set(merge)",
+                    path: followerEdgeRef.path,
+                    payloadKeys: Array(followerPayload.keys),
+                    pathOwnerUid: targetUserId
+                ),
+                FollowBatchWritePlan(
+                    operation: "set(merge)",
+                    path: followingEdgeRef.path,
+                    payloadKeys: Array(followingPayload.keys),
+                    pathOwnerUid: currentUserId
+                ),
+                FollowBatchWritePlan(
+                    operation: "set(merge)",
+                    path: legacyFollowRef.path,
+                    payloadKeys: Array(legacyPayload.keys),
+                    pathOwnerUid: nil
+                ),
+                FollowBatchWritePlan(
+                    operation: "set(merge)",
+                    path: currentRef.path,
+                    payloadKeys: Array(currentUserPayload.keys),
+                    pathOwnerUid: currentUserId
+                )
+            ], authUid: authUser.uid)
+
             let batch = self.db.batch()
-            batch.setData([
-                "followerId": currentUserId,
-                "createdAt": FieldValue.serverTimestamp()
-            ], forDocument: followerEdgeRef, merge: true)
-            batch.setData([
-                "followingId": targetUserId,
-                "createdAt": FieldValue.serverTimestamp()
-            ], forDocument: followingEdgeRef, merge: true)
-            batch.setData([
-                "followerId": currentUserId,
-                "followingId": targetUserId,
-                "createdAt": FieldValue.serverTimestamp()
-            ], forDocument: legacyFollowRef, merge: true)
-            batch.setData([
-                "following": FieldValue.arrayUnion([targetUserId]),
-                "followingCount": FieldValue.increment(Int64(1))
-            ], forDocument: currentRef, merge: true)
-            batch.setData([
-                "followerCount": FieldValue.increment(Int64(1))
-            ], forDocument: targetRef, merge: true)
+            batch.setData(followerPayload, forDocument: followerEdgeRef, merge: true)
+            batch.setData(followingPayload, forDocument: followingEdgeRef, merge: true)
+            batch.setData(legacyPayload, forDocument: legacyFollowRef, merge: true)
+            batch.setData(currentUserPayload, forDocument: currentRef, merge: true)
             try await batch.commit()
             followingIds.insert(targetUserId)
+            }
+        } catch {
+            followingIds.remove(targetUserId)
+            throw error
         }
     }
 
     func unfollowUser(currentUserId: String, targetUserId: String) async throws {
         guard currentUserId != targetUserId else { return }
-        _ = try requireAuthUser(matchingExpectedUid: currentUserId)
-        try await runWrite(successLog: "Unfollowed user") {
+        let authUser = try requireAuthUser(matchingExpectedUid: currentUserId)
+        followingIds.remove(targetUserId)
+        do {
+            try await runWrite(successLog: "Unfollowed user", shouldPublishUserFacingError: false) {
             let currentRef = self.db.collection("users").document(currentUserId)
-            let targetRef = self.db.collection("users").document(targetUserId)
             let followDocId = "\(currentUserId)__\(targetUserId)"
             let legacyFollowRef = self.db.collection("follows").document(followDocId)
             let followerEdgeRef = self.followersCollection(userId: targetUserId).document(currentUserId)
@@ -1499,19 +1617,46 @@ final class FirestoreManager: ObservableObject {
                 return
             }
 
+            self.logFollowBatchPlan([
+                FollowBatchWritePlan(
+                    operation: "delete",
+                    path: followerEdgeRef.path,
+                    payloadKeys: [],
+                    pathOwnerUid: targetUserId
+                ),
+                FollowBatchWritePlan(
+                    operation: "delete",
+                    path: followingEdgeRef.path,
+                    payloadKeys: [],
+                    pathOwnerUid: currentUserId
+                ),
+                FollowBatchWritePlan(
+                    operation: "delete",
+                    path: legacyFollowRef.path,
+                    payloadKeys: [],
+                    pathOwnerUid: nil
+                ),
+                FollowBatchWritePlan(
+                    operation: "set(merge)",
+                    path: currentRef.path,
+                    payloadKeys: ["following"],
+                    pathOwnerUid: currentUserId
+                )
+            ], authUid: authUser.uid)
+
             let batch = self.db.batch()
             batch.deleteDocument(followerEdgeRef)
             batch.deleteDocument(followingEdgeRef)
             batch.deleteDocument(legacyFollowRef)
             batch.setData([
-                "following": FieldValue.arrayRemove([targetUserId]),
-                "followingCount": FieldValue.increment(Int64(-1))
+                "following": FieldValue.arrayRemove([targetUserId])
             ], forDocument: currentRef, merge: true)
-            batch.setData([
-                "followerCount": FieldValue.increment(Int64(-1))
-            ], forDocument: targetRef, merge: true)
             try await batch.commit()
             followingIds.remove(targetUserId)
+            }
+        } catch {
+            followingIds.insert(targetUserId)
+            throw error
         }
     }
 
@@ -1942,6 +2087,11 @@ final class FirestoreManager: ObservableObject {
                     let snapshot = try transaction.getDocument(docRef)
                     guard snapshot.exists, let data = snapshot.data() else {
                         throw NSError(domain: "FirestoreManager", code: 404, userInfo: [NSLocalizedDescriptionKey: "Post not found"])
+                    }
+                    let commentsEnabled = !(data["hideComments"] as? Bool ?? false)
+                    let reactionsEnabled = !(data["hideReactions"] as? Bool ?? false)
+                    guard commentsEnabled || reactionsEnabled else {
+                        throw NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "Likes are disabled for this post"])
                     }
                     var likedBy = data["likedBy"] as? [String] ?? []
                     var likeCount = data["likeCount"] as? Int ?? FirestoreManager.intFromFirestore(data["likeCount"])
@@ -3139,6 +3289,13 @@ final class FirestoreManager: ObservableObject {
 
     /// Returns or creates a 1:1 conversation between two users.
     func fetchOrCreateConversation(between userA: String, and userB: String) async throws -> Conversation {
+        _ = try requireAuthUser(matchingExpectedUid: userA)
+        guard userA != userB else {
+            throw NSError(domain: "FirestoreManager", code: 400, userInfo: [NSLocalizedDescriptionKey: "Choose another person to message."])
+        }
+        if try await interactionBlockedBetween(actorId: userA, otherUserId: userB) {
+            throw NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "Messaging isn't available with this person."])
+        }
         let sorted = [userA, userB].sorted()
         let existing = try await db.collection("conversations")
             .whereField("participantIds", isEqualTo: sorted)
@@ -3195,6 +3352,15 @@ final class FirestoreManager: ObservableObject {
         _ = try requireAuthUser(matchingExpectedUid: senderId)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        let convSnap = try await db.collection("conversations").document(conversationId).getDocument()
+        let participantIds = convSnap.data()?["participantIds"] as? [String] ?? []
+        guard participantIds.contains(senderId) else {
+            throw NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "You aren't part of this conversation."])
+        }
+        if let otherId = participantIds.first(where: { $0 != senderId }),
+           try await interactionBlockedBetween(actorId: senderId, otherUserId: otherId) {
+            throw NSError(domain: "FirestoreManager", code: 403, userInfo: [NSLocalizedDescriptionKey: "Messaging isn't available with this person."])
+        }
         let msgRef = db.collection("conversations")
             .document(conversationId)
             .collection("messages")
@@ -3216,41 +3382,11 @@ final class FirestoreManager: ObservableObject {
 
     /// Seeds the 100 default mental-health groups into Firestore (idempotent — skips existing names).
     func seedDefaultGroupsIfNeeded() async {
-        guard Auth.auth().currentUser != nil else { return }
-        do {
-            let existingSnap = try await db.collection("default_groups").getDocuments()
-            let existingNames = Set(existingSnap.documents.compactMap { ($0.data()["name"] as? String)?.lowercased() })
-            let expectedNames = Set(DefaultGroups.all.map { $0.lowercased() })
-            let missing = expectedNames.subtracting(existingNames)
-            if missing.isEmpty {
-                #if DEBUG
-                print("[GROUP_SEARCH] seedDefaultGroupsIfNeeded complete existing=\(existingNames.count) missing=0")
-                #endif
-                return
-            }
-
-            let batch = db.batch()
-            for name in DefaultGroups.all where missing.contains(name.lowercased()) {
-                let ref = db.collection("default_groups").document(name.lowercased().replacingOccurrences(of: " ", with: "_"))
-                let category = DefaultGroups.categoryForGroup(named: name)
-                let description = "Peer support for \(name.lowercased()) with emotionally safe, low-pressure check-ins."
-                let tags = DefaultGroups.tagsForGroup(name: name, description: description)
-                let searchKeywords = DefaultGroups.searchKeywordsForGroup(name: name, description: description)
-                batch.setData([
-                    "name": name,
-                    "description": description,
-                    "category": category,
-                    "tags": tags,
-                    "searchKeywords": searchKeywords,
-                    "isDefault": true,
-                    "createdAt": FieldValue.serverTimestamp()
-                ], forDocument: ref, merge: true)
-            }
-            try await batch.commit()
-            AppLogger.log("[SEED] Default groups seeded/updated missing=\(missing.count) expected=\(expectedNames.count) existing_before=\(existingNames.count)")
-        } catch {
-            AppLogger.error("seedDefaultGroupsIfNeeded failed: \(error.localizedDescription)")
-        }
+        // Client writes to `default_groups` are intentionally disabled for beta.
+        // Discovery remains complete via authenticated reads plus the local `DefaultGroups` fallback.
+        #if DEBUG
+        print("[GROUP_SEARCH] seedDefaultGroupsIfNeeded skipped client writes; using Firestore reads + local fallback")
+        #endif
     }
 
     // MARK: - Group Admin Voting

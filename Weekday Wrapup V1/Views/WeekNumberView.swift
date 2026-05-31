@@ -85,7 +85,7 @@ struct EmojiPickerView: View {
                                 ],
                                 spacing: 12
                             ) {
-                                ForEach(emojis, id: \.self) { emoji in
+                                ForEach(Array(emojis.enumerated()), id: \.offset) { _, emoji in
                                     Button(action: {
                                         selectedEmoji = emoji
                                         dismiss()

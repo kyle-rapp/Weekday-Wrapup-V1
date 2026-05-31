@@ -150,6 +150,7 @@ final class EmotionPersonalizationEngine {
             reason: bestResource.summary,
             action: "Open resource",
             type: .action,
+            resourceURL: bestResource.url,
             tags: ["resource", "support"] + bestResource.tags,
             emotionTargets: [context.emotion.lowercased()],
             intensityRange: 1 ... 10

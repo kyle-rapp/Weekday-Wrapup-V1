@@ -32,7 +32,7 @@ struct FeedReactionRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            ForEach(rowEmojis, id: \.self) { emoji in
+            ForEach(Array(rowEmojis.enumerated()), id: \.offset) { _, emoji in
                 reactionSlot(emoji: emoji)
                     .frame(maxWidth: .infinity)
                     .frame(minHeight: 44)

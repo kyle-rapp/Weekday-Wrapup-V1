@@ -657,15 +657,15 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		8D3C5EA82FA6FD7700B0687C /* FirebaseDatabase */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = FBA09E001224DD00001A0001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseDatabase;
-		};
 		8D3C5CB22FA703DB00B0687C /* FirebaseCrashlytics */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = FBA09E001224DD00001A0001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseCrashlytics;
+		};
+		8D3C5EA82FA6FD7700B0687C /* FirebaseDatabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FBA09E001224DD00001A0001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseDatabase;
 		};
 		8D3C5EAB2FA703DB00B0687C /* FirebaseStorage */ = {
 			isa = XCSwiftPackageProductDependency;

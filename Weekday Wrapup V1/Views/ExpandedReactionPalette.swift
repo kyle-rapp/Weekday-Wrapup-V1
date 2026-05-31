@@ -29,7 +29,7 @@ struct ExpandedReactionPalette: View {
                         .foregroundStyle(.secondary)
 
                     LazyVGrid(columns: gridColumns, spacing: 12) {
-                        ForEach(section.emojis, id: \.self) { emoji in
+                        ForEach(Array(section.emojis.enumerated()), id: \.offset) { _, emoji in
                             emojiCell(emoji)
                         }
                     }

@@ -19,6 +19,10 @@ struct FeedView: View {
     @State private var cachedSoftSocialNudgeLine: String?
     @State private var cachedWeeklyHelpfulTagsLine: String?
     @State private var feedSummarySignature = ""
+    @State private var showFeedFilters = false
+    @AppStorage("feedFilter.includeFriends") private var includeFriendsFeed = true
+    @AppStorage("feedFilter.includeGroups") private var includeGroupsFeed = true
+    @AppStorage("feedFilter.includePublic") private var includePublicFeed = true
 
     private var palettePost: FeedPost? {
         guard let id = expandedReactionPostId else { return nil }
@@ -26,6 +30,15 @@ struct FeedView: View {
     }
 
     private var paletteViewerId: String? { auth.currentUser?.id }
+    private var filteredPosts: [FeedPost] {
+        firestore.filterPostsForFeedPreferences(
+            firestore.posts,
+            currentUserId: auth.currentUser?.id,
+            includeFriends: includeFriendsFeed,
+            includeGroups: includeGroupsFeed,
+            includePublic: includePublicFeed
+        )
+    }
 
     private var softSocialNudgeLine: String? {
         let tough = firestore.posts.filter { post in
@@ -74,7 +87,7 @@ struct FeedView: View {
                             .padding(.horizontal, 14)
                     }
 
-                    if firestore.posts.isEmpty {
+                    if filteredPosts.isEmpty {
                         Text("No posts yet. Share a wrapup from the Share tab!")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -82,7 +95,7 @@ struct FeedView: View {
                             .padding(.top, 48)
                             .padding(.horizontal)
                     } else {
-                        ForEach(firestore.posts) { post in
+                        ForEach(filteredPosts) { post in
                             FeedPostCard(post: post, expandedReactionPostId: $expandedReactionPostId)
                                 .contentShape(Rectangle())
                                 .onTapGesture {
@@ -152,6 +165,14 @@ struct FeedView: View {
                         }
                     }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showFeedFilters = true
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                    }
+                    .accessibilityLabel("Feed filters")
+                }
             }
         }
         .navigationBarBackButtonHidden(false)
@@ -190,10 +211,33 @@ struct FeedView: View {
             .environmentObject(firestore)
             .environmentObject(auth)
         }
+        .sheet(isPresented: $showFeedFilters) {
+            NavigationStack {
+                Form {
+                    Section("Show posts from") {
+                        Toggle("Friends I follow", isOn: $includeFriendsFeed)
+                        Toggle("Groups I joined", isOn: $includeGroupsFeed)
+                        Toggle("Public/general feed", isOn: $includePublicFeed)
+                    }
+                    Section {
+                        Text("Your own posts always stay visible.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .navigationTitle("Feed Filters")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showFeedFilters = false }
+                    }
+                }
+            }
+        }
     }
 
     private func recomputeFeedSummariesIfNeeded() {
-        let posts = firestore.posts
+        let posts = filteredPosts
         let signature = posts
             .map { "\($0.id)|\($0.authorId)|\($0.intensity ?? -1)|\($0.primaryEmotion)" }
             .joined(separator: ";")
@@ -281,6 +325,9 @@ struct FeedPostCard: View {
     private var uid: String? { auth.currentUser?.id }
     private var livePost: FeedPost {
         post
+    }
+    private var likesAllowed: Bool {
+        livePost.commentsEnabled || !livePost.hideReactions
     }
     private var isFollowingAuthor: Bool {
         firestore.isFollowing(livePost.authorId)
@@ -481,7 +528,7 @@ struct FeedPostCard: View {
             }
 
             let isAuthor = uid == livePost.authorId
-            let canShowReactions = !livePost.hideReactions || isAuthor
+            let canShowReactions = !livePost.hideReactions
             if canShowReactions {
                 FeedReactionRow(
                     livePost: livePost,
@@ -491,33 +538,37 @@ struct FeedPostCard: View {
                 )
             }
 
-            HStack(spacing: 22) {
-                Button {
-                    guard let uid else { return }
-                    Task { @MainActor in
-                        do {
-                            try await firestore.toggleLike(postId: livePost.id, userId: uid)
-                        } catch {
-                            print("❌ Like failed: \(error.localizedDescription)")
+            if likesAllowed || livePost.commentsEnabled {
+                HStack(spacing: 22) {
+                    if likesAllowed {
+                        Button {
+                            guard let uid else { return }
+                            Task { @MainActor in
+                                do {
+                                    try await firestore.toggleLike(postId: livePost.id, userId: uid)
+                                } catch {
+                                    print("❌ Like failed: \(error.localizedDescription)")
+                                }
+                            }
+                        } label: {
+                            Label("\(livePost.likeCount)", systemImage: livePost.isLikedByCurrentUser(uid) ? "heart.fill" : "heart")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(livePost.isLikedByCurrentUser(uid) ? .pink : .secondary)
                         }
+                        .buttonStyle(.borderless)
+                        .disabled(uid == nil)
+                        .scaleEffect(livePost.isLikedByCurrentUser(uid) ? 1.14 : 1.0)
+                        .animation(.spring(response: 0.35, dampingFraction: 0.6), value: livePost.isLikedByCurrentUser(uid))
                     }
-                } label: {
-                    Label("\(livePost.likeCount)", systemImage: livePost.isLikedByCurrentUser(uid) ? "heart.fill" : "heart")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(livePost.isLikedByCurrentUser(uid) ? .pink : .secondary)
-                }
-                .buttonStyle(.borderless)
-                .disabled(uid == nil)
-                .scaleEffect(livePost.isLikedByCurrentUser(uid) ? 1.14 : 1.0)
-                .animation(.spring(response: 0.35, dampingFraction: 0.6), value: livePost.isLikedByCurrentUser(uid))
 
-                if livePost.commentsEnabled || isAuthor {
-                    Label("\(livePost.commentCount)", systemImage: "bubble.right.fill")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
-                }
+                    if livePost.commentsEnabled {
+                        Label("\(livePost.commentCount)", systemImage: "bubble.right.fill")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
 
-                Spacer()
+                    Spacer()
+                }
             }
         }
         .padding(18)

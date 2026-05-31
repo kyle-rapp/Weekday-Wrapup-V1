@@ -1034,7 +1034,7 @@ struct ProfileView: View {
                                                 endPoint: .trailing
                                             )
                                         )
-                                        .frame(width: geo.size.width * CGFloat(score / 10.0), height: 10)
+                                        .frame(width: max(0, geo.size.width * CGFloat(min(max(score / 10.0, 0), 1))), height: 10)
                                 }
                             }
                             .frame(height: 10)

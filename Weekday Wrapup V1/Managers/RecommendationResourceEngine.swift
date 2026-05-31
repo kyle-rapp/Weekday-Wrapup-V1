@@ -120,4 +120,38 @@ enum RecommendationResourceEngine {
             summary: "A gentle printable when keywords don’t match a specific workbook yet."
         )
     }
+
+    /// Resolves a known external URL for a recommendation title across app resource catalogs.
+    static func url(matchingTitle title: String) -> String? {
+        let normalized = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return nil }
+
+        if let hit = catalog.first(where: { $0.title.lowercased() == normalized }) {
+            return hit.url
+        }
+        if let hit = TherapyResourceEngine.resources.first(where: { $0.title.lowercased() == normalized }) {
+            return hit.url
+        }
+        for resource in CheckInContextualResources.allResources() {
+            if resource.title.lowercased() == normalized {
+                return resource.url
+            }
+        }
+        if normalized.contains("cbt") && normalized.contains("journal") {
+            return "https://www.southdenvertherapy.com/free-resources/p/free-cbt-therapy-journal"
+        }
+        if normalized.contains("anxiety") && normalized.contains("quiz") {
+            return "https://www.southdenvertherapy.com/anxiety-quiz"
+        }
+        if normalized.contains("depression") && normalized.contains("quiz") {
+            return "https://www.southdenvertherapy.com/depression-screening-quiz"
+        }
+        if normalized.contains("hold me tight") {
+            return "https://www.goodreads.com/book/show/2153780.Hold_Me_Tight"
+        }
+        if normalized.contains("overthinker") {
+            return "https://josephnguyen.org/collections/books/products/the-overthinkers-guide-to-making-decisions-how-to-make-decisions-without-losing-your-mind?srsltid=AfmBOoqVRy5fapD_Imf0ZcG46wNIySNQwprmiaMKE6Vsm3iQnnV7oDBH"
+        }
+        return nil
+    }
 }

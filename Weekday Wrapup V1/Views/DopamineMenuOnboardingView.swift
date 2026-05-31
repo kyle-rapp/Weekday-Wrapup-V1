@@ -55,7 +55,7 @@ struct DopamineMenuOnboardingView: View {
             categoryStep(
                 title: "Appetizers",
                 description: "Short activities that give a fast mood lift without taking over your day.",
-                examples: ["One favorite song", "1 minute movement", "Quick stretch", "Tea or coffee", "Hug a pet"],
+                suggestions: ["favorite song", "stretch for two minutes", "drink water", "step outside", "quick breathing reset"],
                 prompt: "What are 3 quick things that usually make you feel a little better?",
                 items: $menu.appetizers,
                 placeholder: "e.g. 1 min jumping jacks"
@@ -64,7 +64,7 @@ struct DopamineMenuOnboardingView: View {
             categoryStep(
                 title: "Entrées",
                 description: "More immersive activities that feel energizing or meaningful.",
-                examples: ["Walk", "Journaling", "Cooking", "Creative hobby", "Exercise"],
+                suggestions: ["long walk", "cook something", "journaling", "hobby session", "call a friend"],
                 prompt: "What makes you feel alive or fulfilled?",
                 items: $menu.mains,
                 placeholder: "e.g. journaling"
@@ -73,7 +73,7 @@ struct DopamineMenuOnboardingView: View {
             categoryStep(
                 title: "Sides",
                 description: "Supportive activities that enhance other tasks.",
-                examples: ["Playlist while cleaning", "Podcast", "Timer challenge", "Body doubling"],
+                suggestions: ["podcast while cleaning", "focus playlist", "audiobook", "body doubling", "timer challenge"],
                 prompt: "What helps you get through tasks you normally avoid?",
                 items: $menu.sides,
                 placeholder: "e.g. podcast while cleaning"
@@ -82,7 +82,7 @@ struct DopamineMenuOnboardingView: View {
             categoryStep(
                 title: "Desserts",
                 description: "Comfort activities that can become overused if unbalanced.",
-                examples: ["Social media scroll", "TV", "Games"],
+                suggestions: ["short TV episode", "social media with timer", "cozy game", "memes", "favorite snack"],
                 prompt: "What do you tend to overdo when you're avoiding things?",
                 items: $menu.desserts,
                 placeholder: "e.g. scrolling TikTok"
@@ -91,7 +91,7 @@ struct DopamineMenuOnboardingView: View {
             categoryStep(
                 title: "Specials",
                 description: "Intentional, higher-effort experiences worth planning for.",
-                examples: ["Concert", "Trip", "Nice dinner", "Event with friends"],
+                suggestions: ["museum trip", "concert", "dinner with friend", "massage", "planned nature day"],
                 prompt: "What are things you look forward to?",
                 items: $menu.specials,
                 placeholder: "e.g. concert"
@@ -106,7 +106,7 @@ struct DopamineMenuOnboardingView: View {
     private func categoryStep(
         title: String,
         description: String,
-        examples: [String],
+        suggestions: [String],
         prompt: String,
         items: Binding<[String]>,
         placeholder: String
@@ -117,9 +117,35 @@ struct DopamineMenuOnboardingView: View {
             Text(description)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            Text("Examples: \(examples.joined(separator: ", "))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Tap an idea to add it")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 8)], spacing: 8) {
+                    ForEach(suggestions, id: \.self) { suggestion in
+                        let alreadyAdded = items.wrappedValue.contains { $0.caseInsensitiveCompare(suggestion) == .orderedSame }
+                        Button {
+                            addUnique(suggestion, to: items)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: alreadyAdded ? "checkmark.circle.fill" : "plus.circle.fill")
+                                Text(suggestion)
+                                    .lineLimit(2)
+                                Spacer(minLength: 0)
+                            }
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(alreadyAdded ? AppTheme.colors.sage.opacity(0.16) : AppTheme.colors.sand.opacity(0.25))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(alreadyAdded)
+                    }
+                }
+            }
             Text(prompt)
                 .font(.subheadline.weight(.semibold))
             itemEditor(items: items, placeholder: placeholder)
@@ -191,7 +217,7 @@ struct DopamineMenuOnboardingView: View {
                 Button("Add") {
                     let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else { return }
-                    items.wrappedValue.append(trimmed)
+                    addUnique(trimmed, to: items)
                     draft = ""
                 }
                 .buttonStyle(.bordered)
@@ -211,5 +237,12 @@ struct DopamineMenuOnboardingView: View {
                 .padding(.vertical, 2)
             }
         }
+    }
+
+    private func addUnique(_ value: String, to items: Binding<[String]>) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard !items.wrappedValue.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) else { return }
+        items.wrappedValue.append(trimmed)
     }
 }

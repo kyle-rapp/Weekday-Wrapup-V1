@@ -57,6 +57,10 @@ enum CheckInContextualResources {
         )
     }
 
+    static func allResources() -> [ContextualCheckInResource] {
+        [scaredResource(), relationshipResource()]
+    }
+
     static func contextualResources(
         emotion: String,
         sourceText: String

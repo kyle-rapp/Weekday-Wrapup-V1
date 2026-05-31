@@ -16,6 +16,8 @@ struct Recommendation: Identifiable, Equatable, Hashable {
     let reason: String
     let action: String
     let type: RecommendationType
+    /// External workbook, quiz, or article opened in Safari when present.
+    let resourceURL: String?
     /// V2 scoring metadata.
     let tags: [String]
     let emotionTargets: [String]
@@ -27,6 +29,7 @@ struct Recommendation: Identifiable, Equatable, Hashable {
         reason: String,
         action: String,
         type: RecommendationType,
+        resourceURL: String? = nil,
         tags: [String] = [],
         emotionTargets: [String] = [],
         intensityRange: ClosedRange<Int> = 1 ... 10
@@ -42,6 +45,7 @@ struct Recommendation: Identifiable, Equatable, Hashable {
         self.reason = reason
         self.action = action
         self.type = type
+        self.resourceURL = resourceURL
         self.tags = tags
         self.emotionTargets = emotionTargets
         self.intensityRange = intensityRange

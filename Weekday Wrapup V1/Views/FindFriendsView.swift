@@ -1,6 +1,12 @@
 import SwiftUI
 import UIKit
 
+private struct FindFriendsAlert: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+}
+
 struct FindFriendsView: View {
     @EnvironmentObject private var firestore: FirestoreManager
     @EnvironmentObject private var auth: AuthManager
@@ -9,9 +15,11 @@ struct FindFriendsView: View {
     @State private var results: [AppUser] = []
     @State private var suggested: [AppUser] = []
     @State private var loading = false
-    @State private var showInviteSheet = false
-    @State private var selectedUserForInvite: AppUser?
     @State private var showNativeInviteSheet = false
+    @State private var directConversation: Conversation?
+    @State private var directMessageUserName = "Message"
+    @State private var showDirectMessage = false
+    @State private var activeAlert: FindFriendsAlert?
 
     var body: some View {
         List {
@@ -111,25 +119,23 @@ struct FindFriendsView: View {
         .onChange(of: query) { _, _ in
             Task { await runSearch() }
         }
-        .sheet(isPresented: $showInviteSheet) {
-            if let user = selectedUserForInvite {
-                NavigationStack {
-                    SupportInviteSheetView { activity in
-                        Task {
-                            guard let fromUserId = auth.currentUser?.id, !fromUserId.isEmpty else { return }
-                            do {
-                                try await firestore.sendSupportInvite(
-                                    fromUserId: fromUserId,
-                                    targetUserId: user.id,
-                                    activity: activity
-                                )
-                            } catch {
-                                AppLogger.error("FindFriends invite failed: \(error.localizedDescription)")
-                            }
-                        }
-                    }
-                }
+        .navigationDestination(isPresented: $showDirectMessage) {
+            if let directConversation {
+                ChatView(conversation: directConversation, otherUserName: directMessageUserName)
+                    .environmentObject(firestore)
+                    .environmentObject(auth)
+            } else {
+                Text("Messaging is coming soon.")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
             }
+        }
+        .alert(item: $activeAlert) { alert in
+            Alert(
+                title: Text(alert.title),
+                message: Text(alert.message),
+                dismissButton: .default(Text("OK"))
+            )
         }
     }
 
@@ -165,8 +171,7 @@ struct FindFriendsView: View {
 
             Button {
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                selectedUserForInvite = user
-                showInviteSheet = true
+                Task { await openDirectMessage(with: user) }
             } label: {
                 Image(systemName: "paperplane")
                     .font(.caption.weight(.semibold))
@@ -177,7 +182,7 @@ struct FindFriendsView: View {
                     .clipShape(Capsule())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Invite friend")
+            .accessibilityLabel("Message friend")
         }
     }
 
@@ -207,6 +212,40 @@ struct FindFriendsView: View {
             await loadRecommendations()
         } catch {
             AppLogger.error("FindFriends toggle follow failed: \(error.localizedDescription)")
+            await MainActor.run {
+                activeAlert = FindFriendsAlert(
+                    title: "Couldn't update follow",
+                    message: "Please try again in a moment."
+                )
+            }
+        }
+    }
+
+    private func openDirectMessage(with user: AppUser) async {
+        guard let myId = auth.currentUser?.id else { return }
+        do {
+            let conversation = try await firestore.fetchOrCreateConversation(between: myId, and: user.id)
+            await MainActor.run {
+                directConversation = conversation
+                directMessageUserName = user.name
+                showDirectMessage = true
+            }
+        } catch {
+            AppLogger.error("FindFriends open DM failed: \(error.localizedDescription)")
+            await MainActor.run {
+                guard !showDirectMessage else { return }
+                if (error as NSError).code == 403 {
+                    activeAlert = FindFriendsAlert(
+                        title: "Messaging",
+                        message: "Messaging isn't available with this person right now."
+                    )
+                } else {
+                    activeAlert = FindFriendsAlert(
+                        title: "Messaging",
+                        message: "Couldn't open messaging right now. Please try again."
+                    )
+                }
+            }
         }
     }
 }
