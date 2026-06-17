@@ -45,14 +45,36 @@ struct DirectMessage: Identifiable, Hashable {
     let id: String
     let conversationId: String
     let senderId: String
+    let recipientId: String?
     let text: String
+    let type: String
+    let systemTone: String?
+    let read: Bool?
     let createdAt: Date?
 
-    init(id: String, conversationId: String, senderId: String, text: String, createdAt: Date? = nil) {
+    var isThinkingOfYou: Bool {
+        type == "thinkingOfYou"
+    }
+
+    init(
+        id: String,
+        conversationId: String,
+        senderId: String,
+        recipientId: String? = nil,
+        text: String,
+        type: String = "text",
+        systemTone: String? = nil,
+        read: Bool? = nil,
+        createdAt: Date? = nil
+    ) {
         self.id = id
         self.conversationId = conversationId
         self.senderId = senderId
+        self.recipientId = recipientId
         self.text = text
+        self.type = type
+        self.systemTone = systemTone
+        self.read = read
         self.createdAt = createdAt
     }
 
@@ -63,7 +85,11 @@ struct DirectMessage: Identifiable, Hashable {
         self.id = document.documentID
         self.conversationId = conversationId
         self.senderId = senderId
+        self.recipientId = data["recipientId"] as? String
         self.text = text
+        self.type = data["type"] as? String ?? "text"
+        self.systemTone = data["systemTone"] as? String
+        self.read = data["read"] as? Bool
         self.createdAt = (data["createdAt"] as? Timestamp)?.dateValue()
     }
 }

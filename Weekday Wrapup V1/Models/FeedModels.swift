@@ -13,6 +13,12 @@ enum PostVisibility: String, CaseIterable, Codable, Hashable {
     case groups = "Groups"
 }
 
+enum FeedPostMediaType: String, Codable, Hashable {
+    case image
+    case video
+    case none
+}
+
 struct FeedUser: Identifiable, Equatable, Hashable {
     let id: String
     var name: String
@@ -41,6 +47,12 @@ struct FeedPost: Identifiable, Equatable, Hashable {
     var lookForwardTo: String
     var title: String?
     var imageURL: String?
+    var mediaType: FeedPostMediaType
+    var videoURL: String?
+    var videoThumbnailURL: String?
+    var videoDuration: Double?
+    var videoWidth: Double?
+    var videoHeight: Double?
     /// Calendar week number stored at post time (fallback derived from `createdAt` for older posts).
     var wrapupWeekNumber: Int
     /// Emotion tags from the wrapup check-in (empty for older posts).
@@ -111,6 +123,12 @@ struct FeedPost: Identifiable, Equatable, Hashable {
         lookForwardTo: String = "",
         title: String? = nil,
         imageURL: String? = nil,
+        mediaType: FeedPostMediaType? = nil,
+        videoURL: String? = nil,
+        videoThumbnailURL: String? = nil,
+        videoDuration: Double? = nil,
+        videoWidth: Double? = nil,
+        videoHeight: Double? = nil,
         wrapupWeekNumber: Int = Calendar.current.component(.weekOfYear, from: Date()),
         selectedEmotions: [String] = [],
         likeCount: Int = 0,
@@ -143,6 +161,22 @@ struct FeedPost: Identifiable, Equatable, Hashable {
         self.lookForwardTo = lookForwardTo
         self.title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.imageURL = imageURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanVideoURL = videoURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.videoURL = cleanVideoURL?.isEmpty == false ? cleanVideoURL : nil
+        let cleanThumbURL = videoThumbnailURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.videoThumbnailURL = cleanThumbURL?.isEmpty == false ? cleanThumbURL : nil
+        if let mediaType {
+            self.mediaType = mediaType
+        } else if self.videoURL != nil {
+            self.mediaType = .video
+        } else if self.imageURL?.isEmpty == false {
+            self.mediaType = .image
+        } else {
+            self.mediaType = .none
+        }
+        self.videoDuration = videoDuration
+        self.videoWidth = videoWidth
+        self.videoHeight = videoHeight
         self.wrapupWeekNumber = wrapupWeekNumber
         self.selectedEmotions = selectedEmotions
         self.likeCount = likeCount
@@ -201,6 +235,11 @@ extension FeedPost {
         let title = titleRaw?.trimmingCharacters(in: .whitespacesAndNewlines)
         let imageURLRaw = data["imageURL"] as? String ?? ""
         let imageURL = imageURLRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let videoURLRaw = data["videoURL"] as? String ?? ""
+        let videoURL = videoURLRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let videoThumbnailURLRaw = data["videoThumbnailURL"] as? String ?? ""
+        let videoThumbnailURL = videoThumbnailURLRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let storedMediaType = FeedPostMediaType(rawValue: (data["mediaType"] as? String ?? "").lowercased())
         let likeCount = FirestoreFieldParsing.intValue(data["likeCount"])
         let likedBy = data["likedBy"] as? [String] ?? []
         let userReactionsDirect = data["userReactions"] as? [String: String] ?? [:]
@@ -242,6 +281,20 @@ extension FeedPost {
         self.lookForwardTo = lookForwardTo
         self.title = (title?.isEmpty == false) ? title : nil
         self.imageURL = imageURL.isEmpty ? nil : imageURL
+        self.videoURL = videoURL.isEmpty ? nil : videoURL
+        self.videoThumbnailURL = videoThumbnailURL.isEmpty ? nil : videoThumbnailURL
+        if let storedMediaType {
+            self.mediaType = storedMediaType
+        } else if !videoURL.isEmpty {
+            self.mediaType = .video
+        } else if !imageURL.isEmpty {
+            self.mediaType = .image
+        } else {
+            self.mediaType = .none
+        }
+        self.videoDuration = (data["videoDuration"] as? Double) ?? (data["videoDuration"] as? NSNumber)?.doubleValue
+        self.videoWidth = (data["videoWidth"] as? Double) ?? (data["videoWidth"] as? NSNumber)?.doubleValue
+        self.videoHeight = (data["videoHeight"] as? Double) ?? (data["videoHeight"] as? NSNumber)?.doubleValue
         self.wrapupWeekNumber = resolvedWeek
         self.selectedEmotions = emotionTags
         self.likeCount = likeCount

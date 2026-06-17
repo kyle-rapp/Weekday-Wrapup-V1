@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// FILE: Views/ProfileView.swift
 /// Public profile at `users/{userId}/profile/main`.
@@ -16,6 +17,7 @@ struct ProfileView: View {
     @State private var profileDetails: ProfileDetails?
     @State private var supportSettings: SupportSettings = SupportSettings()
     @State private var fallbackName = "Member"
+    @State private var canonicalProfileImageURL = ""
     @State private var showEditor = false
     /// Loaded only for **your** profile (onboarding preferences).
     @State private var selfPreferences: UserPreferences?
@@ -42,15 +44,22 @@ struct ProfileView: View {
     @State private var followingUsersList: [AppUser] = []
     @State private var showFollowersList = false
     @State private var showFollowingList = false
+    @State private var isLoadingSocialList = false
+    @State private var socialListError: String?
+    @State private var dopamineMenuFallback: DopamineMenu?
     @State private var showThinkingOfYouToast = false
     @State private var thinkingOfYouInFlight = false
     @State private var thinkingOfYouError: String?
     @State private var showDirectMessage = false
     @State private var directConversation: Conversation?
     @State private var loadRequestToken = 0
+    @State private var followActionInFlight = false
+    @State private var followActionError: String?
 
     private var isSelf: Bool { auth.currentUser?.id == userId }
     private var viewerId: String? { auth.currentUser?.id }
+    private var isFollowingProfileUser: Bool { firestore.isFollowing(userId) }
+    private var isBlockedProfileUser: Bool { firestore.blockedUserIds.contains(userId) }
 
     private var isProfilePrivateToViewer: Bool {
         !isSelf && profile?.profileVisibility == PostVisibility.private.rawValue
@@ -154,11 +163,17 @@ struct ProfileView: View {
                     }
 
                     sectionCard(title: "What brings me joy", icon: "sparkles") {
-                        chipGrid(profile?.joys ?? [])
+                        profileChipGrid(
+                            primaryItems: publicJoyProfileItems,
+                            fallbackItems: isSelf ? dopamineJoyFallbackItems : []
+                        )
                     }
 
                     sectionCard(title: "Things I like", icon: "heart.text.square") {
-                        chipGrid(profile?.interests ?? [])
+                        profileChipGrid(
+                            primaryItems: publicLikeProfileItems,
+                            fallbackItems: isSelf ? dopamineInterestFallbackItems : []
+                        )
                     }
 
                     sectionCard(title: "How to support me", icon: "hands.sparkles") {
@@ -286,9 +301,7 @@ struct ProfileView: View {
             }
         }
         .sheet(isPresented: $showInviteSheet) {
-            SupportInviteSheetView { activity in
-                Task { await sendSupportInvite(activity: activity) }
-            }
+            LowKeyInviteShareSheet(profileName: profile?.name ?? fallbackName)
         }
         .sheet(isPresented: $showGiftSheet) {
             SupportGiftSheetView(
@@ -319,7 +332,7 @@ struct ProfileView: View {
         }
         .overlay(alignment: .bottom) {
             if showThinkingOfYouToast {
-                Text("They'll know you're thinking of them 🤍")
+                Text("Sent a little encouragement 💛")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 22)
@@ -331,9 +344,23 @@ struct ProfileView: View {
                     )
                     .padding(.bottom, 36)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let thinkingOfYouError {
+                Text(thinkingOfYouError)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                    .background(
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.9))
+                            .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+                    )
+                    .padding(.bottom, 36)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: showThinkingOfYouToast)
+        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: thinkingOfYouError)
         .onChange(of: showEditor) { _, open in
             if !open {
                 Task { await load(forceRefresh: true) }
@@ -389,11 +416,6 @@ struct ProfileView: View {
                     Text("@\(String(userId.prefix(8)))")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(AppTheme.colors.textSecondary)
-                    if let pronouns = profile?.pronouns, !pronouns.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text(pronouns)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(AppTheme.colors.textSecondary)
-                    }
                 }
                 Spacer(minLength: 8)
             }
@@ -409,6 +431,10 @@ struct ProfileView: View {
 
             if !profileMetadataRows.isEmpty {
                 VStack(spacing: 8) {
+                    Text("About me")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(AppTheme.colors.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     ForEach(profileMetadataRows, id: \.label) { row in
                         HStack(spacing: 8) {
                             Image(systemName: row.icon)
@@ -448,6 +474,8 @@ struct ProfileView: View {
 
             if !isSelf {
                 HStack(spacing: 10) {
+                    profileFollowButton
+
                     Button {
                         Task { await sendThinkingOfYou() }
                     } label: {
@@ -464,16 +492,23 @@ struct ProfileView: View {
                     Button {
                         Task { await openDirectMessage() }
                     } label: {
-                        Label("Message", systemImage: "bubble.left.and.bubble.right")
+                        Image(systemName: "paperplane.fill")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(AppTheme.colors.ocean)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
+                            .frame(width: 34, height: 30)
                             .background(Capsule().fill(AppTheme.colors.ocean.opacity(0.10)))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Message this user")
                 }
                 .padding(.top, 4)
+            }
+
+            if let followActionError {
+                Text(followActionError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -481,8 +516,32 @@ struct ProfileView: View {
         .background(cardBackground)
     }
 
+    @ViewBuilder
+    private var profileFollowButton: some View {
+        Button {
+            Task { await toggleProfileFollow() }
+        } label: {
+            Label(isFollowingProfileUser ? "Following" : "Follow", systemImage: isFollowingProfileUser ? "checkmark" : "person.badge.plus")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(isFollowingProfileUser ? AppTheme.colors.textSecondary : .white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(
+                    Capsule()
+                        .fill(isFollowingProfileUser ? Color.primary.opacity(0.08) : AppTheme.colors.ocean)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(followActionInFlight || isBlockedProfileUser)
+        .opacity(isBlockedProfileUser ? 0.45 : 1)
+        .accessibilityIdentifier(isFollowingProfileUser ? "profile_following_button" : "profile_follow_button")
+    }
+
     private var profileMetadataRows: [(label: String, value: String, icon: String)] {
         var rows: [(label: String, value: String, icon: String)] = []
+        if let pronouns = profile?.pronouns?.trimmingCharacters(in: .whitespacesAndNewlines), !pronouns.isEmpty {
+            rows.append(("Pronouns", pronouns, "person.text.rectangle"))
+        }
         if let zodiac = profile?.zodiacSign?.trimmingCharacters(in: .whitespacesAndNewlines), !zodiac.isEmpty {
             rows.append(("Zodiac", zodiac, "sparkles"))
         }
@@ -494,6 +553,12 @@ struct ProfileView: View {
         }
         if let rs = profile?.relationshipStatus?.trimmingCharacters(in: .whitespacesAndNewlines), !rs.isEmpty {
             rows.append(("Relationship", rs, "person.2"))
+        }
+        if let pets = profile?.pets?.trimmingCharacters(in: .whitespacesAndNewlines), !pets.isEmpty {
+            rows.append(("Pets", pets, "pawprint"))
+        }
+        if let drinking = profile?.drinkingPreference?.trimmingCharacters(in: .whitespacesAndNewlines), !drinking.isEmpty {
+            rows.append(("Drinking", drinking, "wineglass"))
         }
         if let loc = LocationDisplay.coarse(profile?.location), !loc.isEmpty {
             rows.append(("Location", loc, "mappin.and.ellipse"))
@@ -512,7 +577,8 @@ struct ProfileView: View {
 
     @ViewBuilder
     private var profileAvatar: some View {
-        let urlString = profile?.profileImageURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let urlString = (profile?.profileImageURL ?? canonicalProfileImageURL)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         if let url = URL(string: urlString), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
             AsyncImage(url: url) { phase in
                 switch phase {
@@ -670,10 +736,25 @@ struct ProfileView: View {
                 .foregroundStyle(AppTheme.colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
-                Label("Message", systemImage: "bubble.left.and.bubble.right")
-                Label("Invite out", systemImage: "figure.walk")
-                Label("Encourage", systemImage: "heart.text.square")
+                Button {
+                    Task { await openDirectMessage() }
+                } label: {
+                    Image(systemName: "paperplane.fill")
+                        .frame(width: 32, height: 28)
+                }
+                .accessibilityLabel("Message this user")
+                Button {
+                    showInviteSheet = true
+                } label: {
+                    Label("Invite out", systemImage: "figure.walk")
+                }
+                Button {
+                    Task { await sendThinkingOfYou() }
+                } label: {
+                    Label("Encourage", systemImage: "heart.text.square")
+                }
             }
+            .buttonStyle(.bordered)
             .font(.caption.weight(.semibold))
             .foregroundStyle(AppTheme.colors.ocean)
         }
@@ -703,12 +784,14 @@ struct ProfileView: View {
                 if supportSettings.allowMessages {
                     Button {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        showMessageSheet = true
+                        Task { await openDirectMessage() }
                     } label: {
-                        Label("Message", systemImage: "bubble.left.and.bubble.right")
+                        Image(systemName: "paperplane.fill")
                             .font(.subheadline.weight(.semibold))
+                            .frame(width: 34, height: 30)
                     }
                     .buttonStyle(.bordered)
+                    .accessibilityLabel("Message this user")
                 }
                 if supportSettings.allowInvites {
                     Button {
@@ -720,16 +803,14 @@ struct ProfileView: View {
                     }
                     .buttonStyle(.bordered)
                 }
-                if supportSettings.allowGifts {
-                    Button {
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        showGiftSheet = true
-                    } label: {
-                        Label("Send Gift", systemImage: "gift")
-                            .font(.subheadline.weight(.semibold))
-                    }
-                    .buttonStyle(.bordered)
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    Task { await sendThinkingOfYou() }
+                } label: {
+                    Label("Encourage", systemImage: "heart.text.square")
+                        .font(.subheadline.weight(.semibold))
                 }
+                .buttonStyle(.bordered)
             }
         }
         .padding(16)
@@ -795,34 +876,19 @@ struct ProfileView: View {
         HStack(spacing: 22) {
             statView(value: postCount, label: "Posts")
 
-            if !isSelf {
-                Button {
-                    Task {
-                        followingUsersList = []
-                        followersList = await firestore.fetchFollowers(userId: userId)
-                        showFollowersList = true
-                    }
-                } label: {
-                    statView(value: followerCount, label: "Followers")
-                }
-                .buttonStyle(.plain)
-            } else {
+            Button {
+                Task { await openSocialList(.followers) }
+            } label: {
                 statView(value: followerCount, label: "Followers")
             }
+            .buttonStyle(.plain)
 
-            if !isSelf {
-                Button {
-                    Task {
-                        followingUsersList = await firestore.fetchFollowingUsers(userId: userId)
-                        showFollowingList = true
-                    }
-                } label: {
-                    statView(value: followingCount, label: "Following")
-                }
-                .buttonStyle(.plain)
-            } else {
+            Button {
+                Task { await openSocialList(.following) }
+            } label: {
                 statView(value: followingCount, label: "Following")
             }
+            .buttonStyle(.plain)
         }
         .padding(.top, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -842,19 +908,144 @@ struct ProfileView: View {
     }
 
     private func socialUsersList(title: String, users: [AppUser]) -> some View {
-        List(users) { user in
-            VStack(alignment: .leading, spacing: 2) {
-                Text(user.name)
-                    .font(.body.weight(.semibold))
-                if !user.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(user.email)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        Group {
+            if isLoadingSocialList {
+                ProgressView("Loading \(title.lowercased())…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let socialListError {
+                ContentUnavailableView(
+                    "Couldn't load \(title.lowercased())",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(socialListError)
+                )
+            } else if users.isEmpty {
+                ContentUnavailableView(
+                    title == "Followers" ? "No followers yet" : "Not following anyone yet",
+                    systemImage: "person.2",
+                    description: Text("When connections appear, you'll see them here.")
+                )
+            } else {
+                List(users) { user in
+                    NavigationLink {
+                        ProfileView(userId: user.id)
+                            .environmentObject(firestore)
+                            .environmentObject(auth)
+                            .environmentObject(profileManager)
+                    } label: {
+                        HStack(spacing: 12) {
+                            socialAvatar(for: user)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(user.name)
+                                    .font(.body.weight(.semibold))
+                                Text("@\(String(user.id.prefix(8)))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
                 }
             }
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private func socialAvatar(for user: AppUser) -> some View {
+        let raw = user.profileImageURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if let url = URL(string: raw), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFill()
+                case .empty:
+                    ProgressView()
+                default:
+                    Image(systemName: "person.crop.circle.fill")
+                        .resizable()
+                        .scaledToFit()
+                        .foregroundStyle(AppTheme.colors.ocean.opacity(0.75))
+                }
+            }
+            .frame(width: 42, height: 42)
+            .clipShape(Circle())
+        } else {
+            Image(systemName: "person.crop.circle.fill")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 42, height: 42)
+                .foregroundStyle(AppTheme.colors.ocean.opacity(0.75))
+        }
+    }
+
+    private var dopamineJoyFallbackItems: [String] {
+        guard let dopamineMenuFallback else { return [] }
+        return tastefulDopamineFallbackItems(from: dopamineMenuFallback, limit: 2)
+    }
+
+    private var publicJoyProfileItems: [String] {
+        let saved = profile?.joys ?? []
+        if !saved.filter({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }).isEmpty {
+            return saved
+        }
+        return profile?.publicJoyItems ?? []
+    }
+
+    private var publicLikeProfileItems: [String] {
+        let saved = profile?.interests ?? []
+        if !saved.filter({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }).isEmpty {
+            return saved
+        }
+        return profile?.publicLikeItems ?? []
+    }
+
+    private var dopamineInterestFallbackItems: [String] {
+        guard let dopamineMenuFallback else { return [] }
+        let items = tastefulDopamineFallbackItems(from: dopamineMenuFallback, limit: 4)
+        return Array(items.dropFirst(2).prefix(2))
+    }
+
+    private func tastefulDopamineFallbackItems(from menu: DopamineMenu, limit: Int) -> [String] {
+        let privateKeywords = [
+            "therapy", "medication", "sex", "porn", "weed", "alcohol", "drink", "drinking",
+            "shopping", "scroll", "tiktok", "instagram", "youtube", "news", "random internet"
+        ]
+        let candidates = (menu.appetizers + menu.mains + menu.specials)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { item in
+                guard !item.isEmpty else { return false }
+                let lower = item.lowercased()
+                return !privateKeywords.contains { lower.contains($0) }
+            }
+        var seen = Set<String>()
+        var output: [String] = []
+        for item in candidates {
+            let key = item.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            output.append(item)
+            if output.count >= limit { break }
+        }
+        return output
+    }
+
+    private func profileChipGrid(primaryItems: [String], fallbackItems: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            let cleanPrimary = primaryItems
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !cleanPrimary.isEmpty {
+                chipGrid(cleanPrimary)
+            } else if isSelf, !fallbackItems.isEmpty {
+                Text("From your Dopamine Menu")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.colors.textSecondary)
+                chipGrid(fallbackItems)
+            } else {
+                Text(isSelf ? "—" : "They haven't shared this yet.")
+                    .foregroundStyle(AppTheme.colors.textSecondary)
+            }
+        }
     }
 
     private func chipGrid(_ items: [String]) -> some View {
@@ -982,8 +1173,10 @@ struct ProfileView: View {
     /// A 0–10 calm-leaning score. 5 = balanced, >5 = calm-leaning, <5 = stress-leaning.
     private var calmStressScore: Double? {
         guard let b = emotionalBalance else { return nil }
-        let ratio = b.calm / max(b.calm + b.stress, 0.01)
-        return ratio * 10.0
+        let denominator = max(b.calm + b.stress, 0.01)
+        let ratio = LayoutSafety.safeProgress(b.calm / denominator, fallback: 0.5)
+        let score = ratio * 10.0
+        return score.isFinite ? score : 5.0
     }
 
     private var emotionalBalanceLabel: String {
@@ -1034,7 +1227,12 @@ struct ProfileView: View {
                                                 endPoint: .trailing
                                             )
                                         )
-                                        .frame(width: max(0, geo.size.width * CGFloat(min(max(score / 10.0, 0), 1))), height: 10)
+                                        .frame(
+                                            width: LayoutSafety.safeCGFloat(
+                                                geo.size.width * CGFloat(LayoutSafety.safeProgress(score / 10.0))
+                                            ),
+                                            height: 10
+                                        )
                                 }
                             }
                             .frame(height: 10)
@@ -1217,6 +1415,33 @@ struct ProfileView: View {
         }
     }
 
+    private func toggleProfileFollow() async {
+        guard let uid = auth.currentUser?.id, uid != userId else { return }
+        guard !isBlockedProfileUser else {
+            followActionError = "This profile isn't available right now."
+            return
+        }
+        let shouldFollow = !isFollowingProfileUser
+        followActionError = nil
+        followActionInFlight = true
+        do {
+            try await firestore.setFollowing(currentUserId: uid, targetUserId: userId, follow: shouldFollow)
+            let followers = await firestore.getFollowerCount(userId: userId)
+            await MainActor.run {
+                followerCount = followers
+            }
+        } catch {
+            await MainActor.run {
+                followActionError = shouldFollow
+                    ? "Couldn't follow right now. Please try again."
+                    : "Couldn't unfollow right now. Please try again."
+            }
+        }
+        await MainActor.run {
+            followActionInFlight = false
+        }
+    }
+
     private func sendSupportMessage(text: String) async {
         guard let from = viewerId, from != userId else { return }
         guard supportSettings.allowSupport, supportSettings.allowMessages, shouldShowSupportCard else { return }
@@ -1271,6 +1496,10 @@ struct ProfileView: View {
             await MainActor.run {
                 thinkingOfYouError = error.localizedDescription
             }
+            try? await Task.sleep(nanoseconds: 2_800_000_000)
+            await MainActor.run {
+                thinkingOfYouError = nil
+            }
         }
     }
 
@@ -1287,6 +1516,59 @@ struct ProfileView: View {
         }
     }
 
+    private enum SocialListKind {
+        case followers
+        case following
+    }
+
+    private func openSocialList(_ kind: SocialListKind) async {
+        await MainActor.run {
+            socialListError = nil
+            isLoadingSocialList = true
+            switch kind {
+            case .followers:
+                followersList = []
+                showFollowersList = true
+            case .following:
+                followingUsersList = []
+                showFollowingList = true
+            }
+        }
+
+        let users: [AppUser]
+        switch kind {
+        case .followers:
+            users = await firestore.fetchFollowers(userId: userId)
+        case .following:
+            users = await firestore.fetchFollowingUsers(userId: userId)
+        }
+        let visibleUsers = users.filter { !firestore.blockedUserIds.contains($0.id) }
+
+        await MainActor.run {
+            switch kind {
+            case .followers:
+                followersList = visibleUsers
+            case .following:
+                followingUsersList = visibleUsers
+            }
+            isLoadingSocialList = false
+        }
+    }
+
+    private func personalizeFieldsDisplayedCount(in profile: UserProfile?) -> Int {
+        guard let profile else { return 0 }
+        let values = [
+            profile.favoriteSong,
+            profile.pronouns,
+            profile.pets,
+            profile.drinkingPreference,
+            profile.relationshipStatus
+        ]
+        return values.filter {
+            !($0 ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.count
+    }
+
     private func load(forceRefresh: Bool) async {
         let requestToken = await MainActor.run { () -> Int in
             loadRequestToken += 1
@@ -1298,6 +1580,7 @@ struct ProfileView: View {
             }
         }
         let name = await firestore.userDisplayName(userId: userId)
+        let appUser = await firestore.fetchAppUserProfile(userId: userId)
         async let profileTask = profileManager.loadProfile(userId: userId, forceRefresh: forceRefresh)
         async let detailsTask = firestore.fetchProfileDetails(userId: userId)
         async let supportTask = firestore.fetchSupportSettings(userId: userId)
@@ -1310,11 +1593,19 @@ struct ProfileView: View {
         }()
 
         var prefs: UserPreferences?
+        var dopamineMenu: DopamineMenu?
         if isSelf {
             prefs = await firestore.fetchUserPreferences(userId: userId)
+            dopamineMenu = await firestore.fetchDopamineMenu(userId: userId)
         }
+        #if DEBUG
+        print("[DOPAMINE_PROFILE_FALLBACK] viewerUid=\(viewerId ?? "nil") profileUid=\(userId) isOwnProfile=\(isSelf) usedPrivateFallback=\(isSelf && dopamineMenu?.isEmpty == false) attemptedOtherUserMenuRead=false")
+        #endif
 
         let prof = await profileTask
+        #if DEBUG
+        print("[PROFILE_PERSONALIZE_READ] uid=\(userId) favoriteSong=\(prof?.favoriteSong ?? "") pronouns=\(prof?.pronouns ?? "") pets=\(prof?.pets ?? "") drinkingPreference=\(prof?.drinkingPreference ?? "") relationshipStatus=\(prof?.relationshipStatus ?? "") sourcePath=users/{uid}/profile/main fieldsDisplayedCount=\(personalizeFieldsDisplayedCount(in: prof))")
+        #endif
         let det = await detailsTask
         var support = await supportTask ?? SupportSettings()
         let eligible = await eligibleTask
@@ -1335,7 +1626,8 @@ struct ProfileView: View {
 
         await MainActor.run {
             guard requestToken == loadRequestToken else { return }
-            fallbackName = name
+            fallbackName = appUser?.name ?? name
+            canonicalProfileImageURL = appUser?.profileImageURL ?? ""
             profile = prof
             profileDetails = det
             withAnimation(.easeInOut(duration: 0.25)) {
@@ -1347,6 +1639,7 @@ struct ProfileView: View {
             postCount = posts
             postCountEligible = eligible
             selfPreferences = prefs
+            dopamineMenuFallback = dopamineMenu
             isLoadingProfile = false
             if isSelf, eligible {
                 insightDraft = ProfileInsightEngine.generateDraft(
@@ -1357,6 +1650,21 @@ struct ProfileView: View {
             }
         }
     }
+}
+
+private struct LowKeyInviteShareSheet: UIViewControllerRepresentable {
+    let profileName: String
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let name = profileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let addressed = name.isEmpty ? "Want to do something low-key this week?" : "\(name), want to do something low-key this week?"
+        return UIActivityViewController(
+            activityItems: [addressed],
+            applicationActivities: nil
+        )
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
 #if DEBUG

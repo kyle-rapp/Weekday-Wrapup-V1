@@ -5,6 +5,7 @@ struct ProfileCreationView: View {
     @Binding var isPresented: Bool
     @Binding var userName: String
     @Binding var profileImage: Image?
+    @Binding var selectedUIImage: UIImage?
     @Binding var astrologySign: String
     var onContinue: (() async -> Void)? = nil
     
@@ -183,6 +184,7 @@ struct ProfileCreationView: View {
             if let image = newImage {
                 withAnimation {
                     profileImage = Image(uiImage: image)
+                    selectedUIImage = image
                 }
             }
         }
@@ -202,6 +204,7 @@ struct ScaleButtonStyle: ButtonStyle {
         isPresented: .constant(true),
         userName: .constant(""),
         profileImage: .constant(nil),
+        selectedUIImage: .constant(nil),
         astrologySign: .constant("")
     )
 }
@@ -211,6 +214,7 @@ struct ScaleButtonStyle: ButtonStyle {
         isPresented: .constant(true),
         userName: .constant("John Doe"),
         profileImage: .constant(nil),
+        selectedUIImage: .constant(nil),
         astrologySign: .constant("♈️ Aries")
     )
     .preferredColorScheme(.dark)

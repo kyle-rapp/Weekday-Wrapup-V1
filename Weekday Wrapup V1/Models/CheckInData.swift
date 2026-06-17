@@ -140,6 +140,7 @@ struct CheckInData: Identifiable {
             weeklyGoal: post.goal,
             monthlyGoal: "",
             profileImage: nil,
+            checkInVideoURL: nil,
             visibility: post.visibility,
             date: post.createdAt ?? Date(),
             intensity: post.intensity,

@@ -104,7 +104,7 @@ struct CommunityGuidelinesView: View {
     var body: some View {
         List {
             Section {
-                Text("Weekday Wrapup is for warm reflection and peer support. It is not a replacement for professional or emergency care.")
+                Text("SO: Share Openly is for warm reflection and peer support. It is not a replacement for professional or emergency care.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

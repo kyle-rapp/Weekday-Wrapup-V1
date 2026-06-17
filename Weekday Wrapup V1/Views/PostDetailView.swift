@@ -93,6 +93,8 @@ struct PostDetailView: View {
                         }
                     }
 
+                    PostMediaAttachmentView(post: livePost, height: 260)
+
                     Text(livePost.insight)
                         .font(.body)
 

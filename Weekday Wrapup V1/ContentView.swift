@@ -17,7 +17,10 @@ struct ContentView: View {
     @State private var showProfileCreation = false
     @State private var userName = ""
     @State private var profileImage: Image?
+    @State private var profileImageURL = ""
+    @State private var profileUIImage: UIImage?
     @State private var astrologySign = ""
+    @State private var shareProfileNeedsBasicSetup = false
     @State private var weeklyEmoji = ""
     @State private var emotionalInsight = ""
     @State private var gratitudeText = ""
@@ -26,6 +29,8 @@ struct ContentView: View {
     @State private var lookForwardTo = ""
     @State private var postTitle = ""
     @State private var capturedImage: UIImage?
+    @State private var capturedVideoURL: URL?
+    @State private var mediaError: String?
     @State private var visibility: PostVisibility = .public
     @State private var didLoadEmotionDraft = false
     @State private var intensity: Int = 5
@@ -68,6 +73,7 @@ struct ContentView: View {
             poopsText: poopsText,
             lookForwardTo: lookForwardTo,
             profileImage: profileImage,
+            checkInVideoURL: capturedVideoURL,
             visibility: visibility,
             intensity: intensity,
             whatHelped: trimmedHelp.isEmpty ? nil : trimmedHelp,
@@ -180,17 +186,23 @@ struct ContentView: View {
         VStack(spacing: 0) {
                 // Fixed Header
                 HStack(spacing: 12) {
-                    ProfileImageView(image: profileImage)
+                    ProfileImageView(image: profileImage, imageURL: URL(string: profileImageURL))
                         .frame(width: 40, height: 40)
                         .clipShape(Circle())
                         .overlay(Circle().stroke(AppTheme.colors.sand.opacity(0.3), lineWidth: 1))
                         .shadow(color: AppTheme.colors.primary.opacity(0.1), radius: 2)
                         .onTapGesture {
-                            showProfileCreation = true
+                            if shareProfileNeedsBasicSetup {
+                                showProfileCreation = true
+                            }
                         }
                     
                     VStack(alignment: .leading, spacing: 4) {
-                        Button(action: { showProfileCreation = true }) {
+                        Button(action: {
+                            if shareProfileNeedsBasicSetup {
+                                showProfileCreation = true
+                            }
+                        }) {
                             Text(userName.isEmpty ? "Welcome!" : userName)
                                 .font(.headline)
                                 .foregroundColor(AppTheme.colors.textPrimary)
@@ -263,9 +275,18 @@ struct ContentView: View {
                             VStack(alignment: .leading, spacing: 12) {
                                 SectionHeader(title: "Capture Your Moment", icon: "camera.fill", color: AppTheme.colors.ocean)
                                 
-                                MediaCaptureView(capturedImage: $capturedImage)
+                                MediaCaptureView(
+                                    capturedImage: $capturedImage,
+                                    capturedVideoURL: $capturedVideoURL,
+                                    mediaError: $mediaError
+                                )
                                     .frame(height: 200)
                                     .clipShape(RoundedRectangle(cornerRadius: 16))
+                                if let mediaError {
+                                    Text(mediaError)
+                                        .font(.footnote)
+                                        .foregroundStyle(.red)
+                                }
                             }
                         }
                         
@@ -452,6 +473,7 @@ struct ContentView: View {
             ProfileCreationView(isPresented: $showProfileCreation,
                               userName: $userName,
                               profileImage: $profileImage,
+                              selectedUIImage: $profileUIImage,
                               astrologySign: $astrologySign) {
                 await persistProfileOnboardingIfNeeded()
             }
@@ -488,21 +510,33 @@ struct ContentView: View {
             return
         }
         let profile = await firestore.fetchUserProfile(userId: uid)
-        let rootName = auth.currentUser?.name ?? ""
+        let appProfile = await firestore.fetchAppUserProfile(userId: uid)
+        let rootName = appProfile?.name ?? auth.currentUser?.name ?? ""
         let resolvedName = (profile?.name?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
             ? profile?.name ?? rootName
             : rootName
-        let resolvedZodiac = profile?.zodiacSign ?? auth.currentUser?.zodiacSign ?? ""
-        let hasImage = (profile?.hasProfileImage ?? auth.currentUser?.hasProfileImage ?? false)
-            || !((profile?.profileImageURL ?? auth.currentUser?.profileImageURL ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        let isComplete = !resolvedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !resolvedZodiac.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && hasImage
+        let resolvedZodiac = profile?.zodiacSign
+            ?? appProfile?.zodiacSign
+            ?? auth.currentUser?.zodiacSign
+            ?? ""
+        let profileImageURL = profile?.profileImageURL
+            ?? appProfile?.profileImageURL
+            ?? auth.currentUser?.profileImageURL
+            ?? ""
+        let gate = ProfileSetupGate.evaluate(profile: profile, appUser: appProfile ?? auth.currentUser)
+        let imageDisplayed = !profileImageURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || profileUIImage != nil
+
+        #if DEBUG
+        print("[PROFILE_SETUP_GATE] uid=\(uid) displayName=\(resolvedName) zodiacSign=\(resolvedZodiac) profileImageURL=\(profileImageURL) hasProfileImage=\(gate.hasDurableProfileImage) profileComplete=\(!gate.needsBasicSetup) sourcePath=users+profile/main")
+        print("[SHARE_PROFILE_RESOLVE] uid=\(uid) displayName=\(resolvedName) zodiacSign=\(resolvedZodiac) hasProfileImage=\(gate.hasDurableProfileImage) profileImageURL=\(profileImageURL) sourcePath=users+profile/main imageDisplayed=\(imageDisplayed) onboardingTriggered=\(gate.needsBasicSetup) reason=\(gate.reason)")
+        #endif
 
         await MainActor.run {
             userName = resolvedName
             astrologySign = resolvedZodiac
-            showProfileCreation = !isComplete
+            self.profileImageURL = profileImageURL
+            shareProfileNeedsBasicSetup = gate.needsBasicSetup
+            showProfileCreation = gate.needsBasicSetup
         }
     }
 
@@ -516,8 +550,12 @@ struct ContentView: View {
                 userId: uid,
                 displayName: cleanName,
                 zodiacSign: cleanZodiac,
-                hasProfileImage: profileImage != nil || (auth.currentUser?.hasProfileImage ?? false)
+                profileImage: profileUIImage,
+                hasProfileImage: profileUIImage != nil || !profileImageURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             )
+            await auth.refreshCurrentUserProfile()
+            ProfileManager.shared.invalidate(userId: uid)
+            await refreshProfilePresentationState()
         } catch {
             AppLogger.error("persistProfileOnboardingIfNeeded failed: \(error.localizedDescription)")
         }

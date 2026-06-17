@@ -375,13 +375,20 @@ struct PreferencesOnboardingView: View {
             try await firestore.saveUserPreferences(prefs, userId: uid)
             let songTrim = favoriteSong.trimmingCharacters(in: .whitespacesAndNewlines)
             let artistTrim = favoriteArtist.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !songTrim.isEmpty || !artistTrim.isEmpty {
-                var profile = await firestore.fetchUserProfile(userId: uid)
-                    ?? UserProfile(name: auth.currentUser?.name ?? "Member")
-                if !songTrim.isEmpty { profile.favoriteSong = songTrim }
-                if !artistTrim.isEmpty { profile.favoriteArtist = artistTrim }
-                try await firestore.saveUserProfile(profile, userId: uid)
-            }
+            let pronounsTrim = pronouns.trimmingCharacters(in: .whitespacesAndNewlines)
+            let relationshipTrim = relationshipStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+            let petsText = hasPet ? "Has pets" : nil
+            let drinkingText: String? = drinksAlcohol.map { $0 ? "Sometimes drinks" : "Doesn't drink" }
+            try await firestore.savePublicPersonalizeProfileFields(
+                userId: uid,
+                favoriteSong: songTrim,
+                favoriteArtist: artistTrim,
+                pronouns: pronounsTrim,
+                pets: petsText,
+                drinkingPreference: drinkingText,
+                relationshipStatus: relationshipTrim
+            )
+            ProfileManager.shared.invalidate(userId: uid)
             UserDefaults.standard.set(true, forKey: Self.completedKey)
             await MainActor.run { dismiss() }
         } catch {

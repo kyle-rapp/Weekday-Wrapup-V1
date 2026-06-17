@@ -24,6 +24,7 @@ struct GrowView: View {
     @State private var therapyResourcesDismissed = false
     @State private var showManualEntrySheet = false
     @State private var selectedRecommendationDetail: Recommendation?
+    @State private var showDopamineFocusBanner = false
     private let dopamineMenuAnchorId = "grow_dopamine_menu_anchor"
     private var eventStream: EmotionalEventStreamService {
         EmotionalEventStreamService(firestore: firestore)
@@ -77,6 +78,18 @@ struct GrowView: View {
             }
             .scrollIndicators(.visible)
             .background(AppTheme.colors.secondaryBackground.ignoresSafeArea())
+            .overlay(alignment: .top) {
+                if showDopamineFocusBanner {
+                    Text("Your Dopamine Menu is here.")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .background(Capsule().fill(AppTheme.colors.ocean.opacity(0.9)))
+                        .padding(.top, 12)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.large)
             .task(id: auth.currentUser?.id) {
@@ -85,6 +98,15 @@ struct GrowView: View {
             .onAppear {
                 syncEntriesFromFirestore(reason: "onAppear")
                 outdoorSuggestions.startIfNeeded()
+                if tabRouter.focusDopamineMenuInGrow {
+                    DispatchQueue.main.async {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            proxy.scrollTo(dopamineMenuAnchorId, anchor: .top)
+                            showDopamineFocusBanner = true
+                        }
+                        tabRouter.consumeDopamineMenuFocusRequest()
+                    }
+                }
             }
             .onReceive(firestore.$posts) { _ in
                 syncEntriesFromFirestore(reason: "posts_update")
@@ -116,8 +138,13 @@ struct GrowView: View {
                 guard shouldFocus else { return }
                 withAnimation(.easeInOut(duration: 0.25)) {
                     proxy.scrollTo(dopamineMenuAnchorId, anchor: .top)
+                    showDopamineFocusBanner = true
                 }
                 tabRouter.consumeDopamineMenuFocusRequest()
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    showDopamineFocusBanner = false
+                }
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

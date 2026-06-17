@@ -105,7 +105,7 @@ struct ShareOptionsView: View {
             if let pdfData = mailPDFData {
                 ComposeMailController(
                     emailBody: "Here's my weekly wrap-up!",
-                    subject: "My Weekday Wrapup",
+                    subject: "My SO: Share Openly check-in",
                     pdfData: pdfData,
                     delegate: mailDelegate
                 )

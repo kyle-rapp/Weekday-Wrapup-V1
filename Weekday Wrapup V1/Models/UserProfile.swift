@@ -21,6 +21,8 @@ struct UserProfile: Codable, Equatable, Hashable {
     var location: String?
     var school: String?
     var pronouns: String?
+    var pets: String?
+    var drinkingPreference: String?
     var relationshipStatus: String?
 
     var supportPreferences: UserProfileSupportPreferences?
@@ -28,6 +30,9 @@ struct UserProfile: Codable, Equatable, Hashable {
     /// “Things I like” (product copy: interests / likes).
     var interests: [String]?
     var joys: [String]?
+    /// Future-ready explicit public shares; never auto-copied from private Dopamine Menu.
+    var publicJoyItems: [String]?
+    var publicLikeItems: [String]?
     var wishlistLinks: [String]?
 
     var isOpenToMeetups: Bool?
@@ -51,10 +56,14 @@ struct UserProfile: Codable, Equatable, Hashable {
         location: String? = nil,
         school: String? = nil,
         pronouns: String? = nil,
+        pets: String? = nil,
+        drinkingPreference: String? = nil,
         relationshipStatus: String? = nil,
         supportPreferences: UserProfileSupportPreferences? = nil,
         interests: [String]? = nil,
         joys: [String]? = nil,
+        publicJoyItems: [String]? = nil,
+        publicLikeItems: [String]? = nil,
         wishlistLinks: [String]? = nil,
         isOpenToMeetups: Bool? = nil,
         prefersSupport: [String]? = nil,
@@ -73,10 +82,14 @@ struct UserProfile: Codable, Equatable, Hashable {
         self.location = location
         self.school = school
         self.pronouns = pronouns
+        self.pets = pets
+        self.drinkingPreference = drinkingPreference
         self.relationshipStatus = relationshipStatus
         self.supportPreferences = supportPreferences
         self.interests = interests
         self.joys = joys
+        self.publicJoyItems = publicJoyItems
+        self.publicLikeItems = publicLikeItems
         self.wishlistLinks = wishlistLinks
         self.isOpenToMeetups = isOpenToMeetups
         self.prefersSupport = prefersSupport

@@ -49,6 +49,7 @@ struct Weekday_Wrapup_V1App: App {
                 AppLogger.error("FirebaseApp failed to configure. Verify GoogleService-Info.plist is included in target.")
             } else {
                 AppLogger.log("FirebaseApp configured successfully.")
+                FirestoreManager.logFirebaseProjectAndRulesAudit()
             }
             if !isUITestMode {
                 NotificationManager.shared.requestPermission()

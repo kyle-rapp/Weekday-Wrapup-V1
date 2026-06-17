@@ -10,6 +10,11 @@ struct DopamineMenuOnboardingView: View {
 
     private let totalSteps = 7
 
+    init(initialMenu: DopamineMenu = DopamineMenu(), onComplete: @escaping (DopamineMenu) -> Void) {
+        self.onComplete = onComplete
+        _menu = State(initialValue: initialMenu)
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 16) {
@@ -29,7 +34,6 @@ struct DopamineMenuOnboardingView: View {
                         if step == totalSteps - 1 {
                             let final = menu.sanitized()
                             onComplete(final)
-                            dismiss()
                         } else {
                             withAnimation(.easeInOut(duration: 0.2)) { step += 1 }
                         }

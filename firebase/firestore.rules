@@ -1,5 +1,6 @@
 rules_version = '2';
 // Deploy with: firebase deploy --only firestore:rules
+// Publish in Firebase Console → Firestore → Rules → Publish (required for app to use these rules).
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -16,15 +17,23 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create: if signedIn()
         && request.resource.data.userId == request.auth.uid
-        && request.resource.data.authorId == request.auth.uid;
+        && (
+          !('authorId' in request.resource.data)
+          || request.resource.data.authorId == request.auth.uid
+        );
       allow update: if signedIn()
         && (
           resource.data.authorId == request.auth.uid
+          || resource.data.userId == request.auth.uid
           || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likedBy', 'likeCount'])
           || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions', 'userReactions'])
           || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['commentCount'])
         );
-      allow delete: if signedIn() && resource.data.authorId == request.auth.uid;
+      allow delete: if signedIn()
+        && (
+          resource.data.authorId == request.auth.uid
+          || resource.data.userId == request.auth.uid
+        );
 
       match /comments/{commentId} {
         allow read: if signedIn();
@@ -44,7 +53,6 @@ service cloud.firestore {
         }
       }
 
-      /// Soft reactions: one doc per user per reaction `type` per post — id must be `{uid}__{type}`.
       match /reactions/{reactionId} {
         allow read: if signedIn();
 
@@ -87,7 +95,6 @@ service cloud.firestore {
         && request.resource.data.followerId == request.auth.uid
         && request.resource.data.keys().hasAll(['followerId', 'followingId', 'createdAt']);
       allow delete: if signedIn() && resource.data.followerId == request.auth.uid;
-      // Client uses setData(merge: true) when re-following after unfollow.
       allow update: if signedIn()
         && resource.data.followerId == request.auth.uid
         && request.resource.data.followerId == request.auth.uid;
@@ -103,7 +110,6 @@ service cloud.firestore {
 
     match /followers/{userId}/userFollowers/{followerUid} {
       allow read: if signedIn();
-      // Follower writes their own edge doc; document id must match auth uid.
       allow create, update: if signedIn() && request.auth.uid == followerUid;
       allow delete: if signedIn() && request.auth.uid == followerUid;
     }
@@ -142,30 +148,39 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    match /dopamineMenus/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+    match /group_admin_votes/{groupId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn();
+      allow delete: if false;
     }
 
-    /// Top-level user document + subcollections. Reads: any signed-in user. Writes: only the owner document.
+    match /dopamineMenus/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    match /thinking_of_you/{docId} {
+      allow create: if signedIn()
+        && request.resource.data.fromUserId == request.auth.uid
+        && request.resource.data.toUserId is string
+        && request.resource.data.toUserId != request.auth.uid
+        && request.resource.data.keys().hasAll(['fromUserId', 'toUserId', 'createdAt']);
+      allow read, update, delete: if false;
+    }
+
     match /users/{userId} {
-      // `read` = get + list for collections; authenticated members can read profiles.
       allow read: if signedIn();
-      // Owner-only writes on the user root document (merge updates, display name, etc.).
       allow create, delete: if isOwner(userId);
       allow update: if isOwner(userId);
 
       match /profile/{docId} {
         allow read: if signedIn();
-        allow create, update, delete: if signedIn() && request.auth.uid == userId;
+        allow create, update, delete: if isOwner(userId);
       }
 
       match /preferences/{docId} {
-        allow read: if signedIn() && request.auth.uid == userId;
-        allow create, update, delete: if signedIn() && request.auth.uid == userId;
+        allow read, write: if isOwner(userId);
       }
 
-      // Owner manages their block list. Others may read only the doc keyed with their own uid
-      // (e.g. users/{otherUid}/blockedUsers/{myUid}) to enforce mutual messaging blocks.
       match /blockedUsers/{blockedUserId} {
         allow read: if isOwner(userId)
           || (signedIn() && request.auth.uid == blockedUserId);
@@ -173,16 +188,15 @@ service cloud.firestore {
       }
 
       match /recommendationFeedback/{docId} {
-        allow read: if signedIn() && request.auth.uid == userId;
-        allow create: if signedIn() && request.auth.uid == userId;
+        allow read, create: if isOwner(userId);
       }
 
       match /recommendationMemory/{docId} {
-        allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+        allow read, write: if isOwner(userId);
       }
 
       match /habitSignals/{docId} {
-        allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+        allow read, write: if isOwner(userId);
       }
 
       match /insights/{document=**} {
@@ -190,28 +204,31 @@ service cloud.firestore {
       }
 
       match /adaptiveProfile/{docId} {
-        allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+        allow read, write: if isOwner(userId);
       }
 
       match /eventStream/{docId} {
         allow read, write: if isOwner(userId);
       }
 
+      match /nudges/{nudgeId} {
+        allow read, write: if isOwner(userId);
+      }
+
       match /support/{docId} {
-        allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+        allow read, write: if isOwner(userId);
       }
 
       match /supportInbox/{docId} {
-        allow read: if signedIn() && request.auth.uid == userId;
+        allow read: if isOwner(userId);
         allow create: if signedIn()
           && request.resource.data.fromUserId == request.auth.uid
           && request.resource.data.keys().hasAll(['fromUserId', 'type', 'createdAt']);
-        allow update, delete: if signedIn() && request.auth.uid == userId;
+        allow update, delete: if isOwner(userId);
       }
     }
 
     match /conversations/{conversationId} {
-      // `read` covers get + list; queries must filter by participantIds containing auth uid.
       allow read: if signedIn() && request.auth.uid in resource.data.participantIds;
       allow create: if signedIn()
         && request.auth.uid in request.resource.data.participantIds

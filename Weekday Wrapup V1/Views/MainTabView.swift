@@ -86,6 +86,7 @@ struct MainTabView: View {
             }
             .environmentObject(auth)
             .environmentObject(firestore)
+            .environmentObject(tabRouter)
         }
     }
 }

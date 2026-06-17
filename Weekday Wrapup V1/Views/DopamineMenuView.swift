@@ -134,9 +134,7 @@ struct DopamineMenuView: View {
             }
         }
         .sheet(isPresented: $showOnboarding) {
-            DopamineMenuOnboardingView { created in
-                Task { await saveMenu(created) }
-            }
+            DopamineMenuOnboardingView(initialMenu: menu, onComplete: handleOnboardingComplete)
         }
         .task(id: auth.currentUser?.id) {
             await loadMenu()
@@ -218,6 +216,10 @@ struct DopamineMenuView: View {
         }
     }
 
+    private func handleOnboardingComplete(_ created: DopamineMenu) {
+        Task { await saveMenu(created) }
+    }
+
     private func loadMenu() async {
         guard let uid = auth.currentUser?.id else { return }
         isLoading = true
@@ -231,13 +233,34 @@ struct DopamineMenuView: View {
     private func saveMenu(_ updated: DopamineMenu) async {
         guard let uid = auth.currentUser?.id else { return }
         let previous = menu.sanitized()
+        let sanitized = updated.sanitized()
+        #if DEBUG
+        print("[DOPAMINE_SAVE] uid=\(uid) appetizers=\(sanitized.appetizers.count) mains=\(sanitized.mains.count) sides=\(sanitized.sides.count) desserts=\(sanitized.desserts.count) specials=\(sanitized.specials.count)")
+        #endif
         do {
-            try await firestore.saveDopamineMenu(userId: uid, menu: updated)
+            try await firestore.saveDopamineMenu(userId: uid, menu: sanitized)
+            let fetched = await firestore.fetchDopamineMenu(userId: uid)
             await MainActor.run {
-                menu = updated.sanitized()
+                menu = fetched ?? sanitized
+                showAdd = false
+                showEdit = false
+                showOnboarding = false
+                recomputeSuggestionsIfNeeded(reason: "dopamine_save")
             }
-            await logDopamineMenuDiffEvents(userId: uid, from: previous, to: updated.sanitized())
+            #if DEBUG
+            let fetchedMenu = fetched ?? DopamineMenu()
+            let fetchedCount = fetchedMenu.appetizers.count
+                + fetchedMenu.mains.count
+                + fetchedMenu.sides.count
+                + fetchedMenu.desserts.count
+                + fetchedMenu.specials.count
+            print("[DOPAMINE_SAVE] uid=\(uid) saveSuccess=true fetchBackCount=\(fetchedCount) dismissTriggered=true")
+            #endif
+            await logDopamineMenuDiffEvents(userId: uid, from: previous, to: sanitized)
         } catch {
+            #if DEBUG
+            print("[DOPAMINE_SAVE] uid=\(uid) save=failure error=\(error.localizedDescription)")
+            #endif
             AppLogger.error("Dopamine menu save failed: \(error.localizedDescription)")
         }
     }

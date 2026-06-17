@@ -321,12 +321,21 @@ struct DailyCheckInRecommendationsSheet: View {
     }
 
     private func openDopamineMenu() async {
+        let hadReflectionText = !whatHelpedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         await savePositiveReflectionIfNeeded()
         await MainActor.run {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             addedToDopamineMenu = true
+            #if DEBUG
+            print("[POST_POPUP_DOPAMINE_NAV] buttonTapped=true savedReflection=\(hadReflectionText) dismissedSheet=true switchedToGrow=false openedMenu=false")
+            #endif
             onDismiss()
-            tabRouter.openDopamineMenuInGrow()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                tabRouter.openDopamineMenuInGrow()
+                #if DEBUG
+                print("[POST_POPUP_DOPAMINE_NAV] buttonTapped=true savedReflection=\(hadReflectionText) dismissedSheet=true switchedToGrow=true openedMenu=true")
+                #endif
+            }
         }
     }
 

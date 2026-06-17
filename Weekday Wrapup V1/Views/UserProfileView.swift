@@ -33,18 +33,28 @@ struct UserProfileView: View {
 
                 if !isSelf {
                     VStack(spacing: 10) {
-                        Button {
-                            Task { await toggleFollow() }
-                        } label: {
-                            Text(isFollowing ? "Following" : "Follow")
+                        if isFollowing {
+                            Label("Following", systemImage: "checkmark.circle.fill")
                                 .font(.subheadline.weight(.semibold))
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 12)
-                                .background(isFollowing ? Color.gray.opacity(0.15) : Color.blue.opacity(0.15))
-                                .foregroundStyle(isFollowing ? Color.primary : Color.blue)
+                                .background(Color.green.opacity(0.12))
+                                .foregroundStyle(Color.green)
                                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        } else {
+                            Button {
+                                Task { await toggleFollow() }
+                            } label: {
+                                Text("Follow")
+                                    .font(.subheadline.weight(.semibold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                                    .background(Color.blue.opacity(0.15))
+                                    .foregroundStyle(Color.blue)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
 
                         Button {
                             Task { await sendThinkingOfYou() }
@@ -79,6 +89,13 @@ struct UserProfileView: View {
                             showBlockConfirm = true
                         } label: {
                             Label("Block user", systemImage: "person.crop.circle.badge.xmark")
+                        }
+                        if isFollowing {
+                            Button(role: .destructive) {
+                                Task { await toggleFollow() }
+                            } label: {
+                                Label("Unfollow", systemImage: "person.badge.minus")
+                            }
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")

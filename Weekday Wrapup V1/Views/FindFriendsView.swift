@@ -65,7 +65,7 @@ struct FindFriendsView: View {
             }
 
             if !suggested.isEmpty {
-                Section("Suggested for you") {
+                Section("Suggested People") {
                     ForEach(suggested) { user in
                         friendRow(user)
                     }
@@ -143,15 +143,20 @@ struct FindFriendsView: View {
     private func friendRow(_ user: AppUser) -> some View {
         HStack(spacing: 12) {
             NavigationLink {
-                UserProfileView(userId: user.id)
+                ProfileView(userId: user.id)
+                    .environmentObject(firestore)
+                    .environmentObject(auth)
             } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(user.name)
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text("\(user.followerCount) followers")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    userAvatar(user)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(user.name)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Text("@\(String(user.id.prefix(8))) · \(user.followerCount) followers")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .buttonStyle(.plain)
@@ -183,6 +188,34 @@ struct FindFriendsView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Message friend")
+        }
+    }
+
+    @ViewBuilder
+    private func userAvatar(_ user: AppUser) -> some View {
+        let raw = user.profileImageURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if let url = URL(string: raw), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFill()
+                case .empty:
+                    ProgressView()
+                default:
+                    Image(systemName: "person.crop.circle.fill")
+                        .resizable()
+                        .scaledToFit()
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 38, height: 38)
+            .clipShape(Circle())
+        } else {
+            Image(systemName: "person.crop.circle.fill")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 38, height: 38)
+                .foregroundStyle(.secondary)
         }
     }
 

@@ -91,6 +91,42 @@ struct ChatView: View {
 
     @ViewBuilder
     private func messageBubble(_ msg: DirectMessage) -> some View {
+        if msg.isThinkingOfYou {
+            thinkingOfYouCard(msg)
+        } else {
+            standardMessageBubble(msg)
+        }
+    }
+
+    private func thinkingOfYouCard(_ msg: DirectMessage) -> some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: "heart.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.yellow.opacity(0.95))
+                Text(msg.text)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.yellow.opacity(0.14))
+            )
+            if let date = msg.createdAt {
+                Text(date.formatted(.dateTime.hour().minute()))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func standardMessageBubble(_ msg: DirectMessage) -> some View {
         let isMe = msg.senderId == myId
         HStack {
             if isMe { Spacer(minLength: 48) }

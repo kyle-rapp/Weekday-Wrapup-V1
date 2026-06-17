@@ -58,19 +58,32 @@ final class AuthManager: ObservableObject {
         await loadOrSeedProfile(for: user)
     }
 
+    func refreshCurrentUserProfile() async {
+        guard let user = Auth.auth().currentUser else { return }
+        await loadOrSeedProfile(for: user)
+    }
+
     private func loadOrSeedProfile(for user: FirebaseAuth.User) async {
         guard let db else { return }
         let ref = db.collection("users").document(user.uid)
         do {
             let snap = try await ref.getDocument()
-            let profileSnap = try await db.collection("users").document(user.uid).collection("profile").document("main").getDocument()
-            let profileData = profileSnap.data() ?? [:]
-            let zodiacSign = profileData["zodiacSign"] as? String
-            let profileImageURL = profileData["profileImageURL"] as? String
-            let hasProfileImage = profileData["hasProfileImage"] as? Bool ?? false
+            let profileSnap = try? await db.collection("users").document(user.uid).collection("profile").document("main").getDocument()
+            let profileData = profileSnap?.data() ?? [:]
             if let data = snap.data(),
-               let name = data["name"] as? String,
                let email = data["email"] as? String {
+                let name = ((profileData["name"] as? String) ?? (data["name"] as? String) ?? user.displayName ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let zodiacSign = ((profileData["zodiacSign"] as? String) ?? (data["zodiacSign"] as? String))?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let profileImageURL = ((profileData["profileImageURL"] as? String) ?? (data["profileImageURL"] as? String))?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let hasProfileImage = (profileData["hasProfileImage"] as? Bool)
+                    ?? (data["hasProfileImage"] as? Bool)
+                    ?? false
+                #if DEBUG
+                print("[PROFILE_RESOLVE] userId=\(user.uid) sourcePath=users+profile/main displayNameFound=\(!name.isEmpty) handleFound=\((data["username"] as? String)?.isEmpty == false) profileImageURLFound=\((profileImageURL?.isEmpty == false)) fallbackUsed=\(name.isEmpty)")
+                #endif
                 let created = (data["createdAt"] as? Timestamp)?.dateValue() ?? Date()
                 let streak = Self.intFromFirestore(data["checkInStreak"])
                 let lastCheckIn = (data["lastCheckInDate"] as? Timestamp)?.dateValue()
@@ -79,7 +92,7 @@ final class AuthManager: ObservableObject {
                 let followingCount = Self.intFromFirestore(data["followingCount"])
                 currentUser = AppUser(
                     id: user.uid,
-                    name: name,
+                    name: name.isEmpty ? "Friend" : name,
                     email: email,
                     createdAt: created,
                     postCount: postCount,

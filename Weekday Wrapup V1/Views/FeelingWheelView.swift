@@ -10,7 +10,7 @@ struct FeelingWheelView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let side = min(geometry.size.width, geometry.size.height)
+            let side = max(min(geometry.size.width, geometry.size.height), 1)
             let wheelRadius = side / 2
 
             VStack(spacing: 12) {
@@ -99,9 +99,10 @@ private struct WheelLayout {
 
     init(center: CGPoint, wheelRadius: CGFloat) {
         self.center = center
-        self.wheelRadius = wheelRadius
-        self.innerRadius = wheelRadius * 0.55
-        self.outerRadius = wheelRadius * 0.95
+        let safeRadius = LayoutSafety.safeCGFloat(wheelRadius, fallback: 1)
+        self.wheelRadius = safeRadius
+        self.innerRadius = safeRadius * 0.55
+        self.outerRadius = safeRadius * 0.95
     }
 
     func primaryStart(index: Int) -> Double { -90 + Double(index) * primarySpanDegrees }

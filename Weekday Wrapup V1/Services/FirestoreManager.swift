@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import AVFoundation
 import FirebaseAuth
 import FirebaseFirestore
 #if canImport(FirebaseStorage)
@@ -389,19 +390,60 @@ final class FirestoreManager: ObservableObject {
         includePublic: Bool
     ) -> [FeedPost] {
         guard let currentUserId else { return [] }
-        return items.filter { post in
-            if post.authorId == currentUserId { return true }
+        let filtered = items.filter { post in
+            let isSelfPost = post.authorId == currentUserId
+            let isFollowedAuthor = followingIds.contains(post.authorId)
+            if isSelfPost { return true }
             switch post.visibility {
             case .public:
-                return includePublic
+                return includePublic || (includeFriends && isFollowedAuthor)
             case .friends:
-                return includeFriends && followingIds.contains(post.authorId)
+                return includeFriends && isFollowedAuthor
             case .groups:
                 return includeGroups
             case .private:
                 return false
             }
         }
+        #if DEBUG
+        let excluded = items.filter { post in !filtered.contains(where: { $0.id == post.id }) }
+        print("[FEED_FILTER] activeFilters friends=\(includeFriends) groups=\(includeGroups) public=\(includePublic)")
+        print("[FEED_FILTER] followingIds count=\(followingIds.count) ids=\(followingIds.sorted().joined(separator: ","))")
+        print("[FEED_FILTER] posts before=\(items.count) after=\(filtered.count)")
+        for post in filtered.prefix(20) {
+            let reason: String
+            if post.authorId == currentUserId {
+                reason = "included_self"
+            } else if post.visibility == .public && includePublic {
+                reason = "included_public"
+            } else if followingIds.contains(post.authorId) && (post.visibility == .friends || (post.visibility == .public && includeFriends)) {
+                reason = "included_followed"
+            } else if post.visibility == .groups && includeGroups {
+                reason = "included_groups"
+            } else {
+                reason = "included_other"
+            }
+            print("[FEED_FILTER] included post=\(post.id) author=\(post.authorId) visibility=\(post.visibility.rawValue) reason=\(reason)")
+        }
+        for post in excluded.prefix(20) {
+            let reason: String
+            if blockedUserIds.contains(post.authorId) {
+                reason = "blocked_author"
+            } else if post.visibility == .private {
+                reason = "private_not_author"
+            } else if post.visibility == .groups && !includeGroups {
+                reason = "groups_filter_off"
+            } else if post.visibility == .friends && !followingIds.contains(post.authorId) {
+                reason = "not_followed_author"
+            } else if post.visibility == .public && !includePublic && !(includeFriends && followingIds.contains(post.authorId)) {
+                reason = "public_filter_off_not_followed"
+            } else {
+                reason = "unknown"
+            }
+            print("[FEED_FILTER] excluded post=\(post.id) author=\(post.authorId) visibility=\(post.visibility.rawValue) reason=\(reason)")
+        }
+        #endif
+        return filtered
     }
 
     // MARK: - Groups (`groups` collection)
@@ -1241,7 +1283,7 @@ final class FirestoreManager: ObservableObject {
         }
         stopFollowingListener()
         activeFollowingUserId = userId
-        followingListener = db.collection("users").document(userId)
+        followingListener = followingCollection(userId: userId)
             .addSnapshotListener { [weak self] snapshot, error in
                 guard let self else { return }
                 if let error {
@@ -1250,9 +1292,7 @@ final class FirestoreManager: ObservableObject {
                     }
                     return
                 }
-                guard let data = snapshot?.data() else { return }
-                let raw = data["following"] as? [Any] ?? []
-                let ids: [String] = raw.compactMap { $0 as? String }
+                let ids = snapshot?.documents.map(\.documentID) ?? []
                 Task { @MainActor in
                     self.followingIds = Set(ids)
                 }
@@ -1347,18 +1387,14 @@ final class FirestoreManager: ObservableObject {
         }
     }
 
-    /// Display name from `users/{userId}` (best-effort).
+    /// Display name from canonical public profile (root + `profile/main`).
     func userDisplayName(userId: String) async -> String {
         #if DEBUG
         if Self.isXcodePreview { return "Friend" }
         #endif
-        do {
-            let snap = try await db.collection("users").document(userId).getDocument()
-            if let name = snap.data()?["name"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return name
-            }
-        } catch {
-            print("⚠️ userDisplayName: \(error.localizedDescription)")
+        if let user = await fetchAppUserProfile(userId: userId),
+           !user.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return user.name
         }
         return "User \(String(userId.prefix(8)))"
     }
@@ -1366,14 +1402,20 @@ final class FirestoreManager: ObservableObject {
     /// App-level profile summary with social counts (distinct from `UserProfile` in profile system).
     func fetchAppUserProfile(userId: String) async -> AppUser? {
         if Self.isXcodePreview { return nil }
-        do {
-            let snap = try await db.collection("users").document(userId).getDocument()
-            guard let data = snap.data() else { return nil }
-            return appUserFromDocument(id: userId, data: data)
-        } catch {
-            AppLogger.error("fetchAppUserProfile failed: \(error.localizedDescription)")
-            return nil
-        }
+        let rootSnap = try? await userRootRef(userId: userId).getDocument()
+        let profileSnap = try? await userPublicProfileRef(userId: userId).getDocument()
+        let root = rootSnap?.data() ?? [:]
+        let profileMain = profileSnap?.data() ?? [:]
+        guard !root.isEmpty || !profileMain.isEmpty else { return nil }
+
+        let canonical = Self.mergeCanonicalPublicFields(root: root, profileMain: profileMain)
+        guard let user = appUserFromCanonical(userId: userId, root: root, canonical: canonical) else { return nil }
+
+        #if DEBUG
+        let fallbackUsed = canonical.displayName.isEmpty
+        print("[PROFILE_RESOLVE] uid=\(userId) displayName=\(user.name) profileImageURL=\(user.profileImageURL ?? "") sourcePath=\(canonical.sourcePath) fallbackUsed=\(fallbackUsed)")
+        #endif
+        return user
     }
 
     func fetchUserProfile(userId: String, includeSocialCounts: Bool) async -> AppUser? {
@@ -1404,7 +1446,17 @@ final class FirestoreManager: ObservableObject {
                     .limit(to: 20)
             }
             let docs = try await request.getDocuments()
-            return docs.documents.compactMap { appUserFromDocument(id: $0.documentID, data: $0.data()) }
+            var users: [AppUser] = []
+            for doc in docs.documents {
+                let root = doc.data()
+                let profileMain = (try? await userPublicProfileRef(userId: doc.documentID).getDocument())?.data() ?? [:]
+                let canonical = Self.mergeCanonicalPublicFields(root: root, profileMain: profileMain)
+                guard !canonical.displayName.isEmpty,
+                      let user = appUserFromCanonical(userId: doc.documentID, root: root, canonical: canonical)
+                else { continue }
+                users.append(user)
+            }
+            return users
         } catch {
             AppLogger.error("searchUsers failed: \(error.localizedDescription)")
             return []
@@ -1419,20 +1471,40 @@ final class FirestoreManager: ObservableObject {
 
             let allUsers = try await queryUsers.documents
             let followingSet = Set(try await myFollowingDocs.documents.map(\.documentID))
+            let usersFetched = allUsers.count
+            var afterSelf = 0
+            var afterFollowing = 0
+            var afterBlocked = 0
+            var afterNameless = 0
 
             var candidates: [(AppUser, Double)] = []
             for doc in allUsers {
                 guard doc.documentID != user.id else { continue }
+                afterSelf += 1
                 guard !followingSet.contains(doc.documentID) else { continue }
-                guard let appUser = appUserFromDocument(id: doc.documentID, data: doc.data()) else { continue }
+                afterFollowing += 1
+                guard !blockedUserIds.contains(doc.documentID) else {
+                    afterBlocked += 1
+                    continue
+                }
+
+                let root = doc.data()
+                let profileMain = (try? await userPublicProfileRef(userId: doc.documentID).getDocument())?.data() ?? [:]
+                let canonical = Self.mergeCanonicalPublicFields(root: root, profileMain: profileMain)
+                guard !canonical.displayName.isEmpty else {
+                    afterNameless += 1
+                    continue
+                }
+                guard let appUser = appUserFromCanonical(userId: doc.documentID, root: root, canonical: canonical) else {
+                    afterNameless += 1
+                    continue
+                }
 
                 async let theirFollowerCount = fetchFollowerCount(userId: appUser.id)
                 async let theirFollowingDocs = followingCollection(userId: appUser.id).limit(to: 120).getDocuments()
 
                 let theirFollowingSet = Set((try await theirFollowingDocs).documents.map(\.documentID))
 
-                // Other users' private insights are intentionally not read here; Firestore rules keep
-                // `users/{uid}/insights/*` owner-only to avoid leaking emotional profile data.
                 let emotionOverlap = 0.0
                 let sharedHelpfulTags = 0.0
                 let mutualConnectionsWeight = Double(followingSet.intersection(theirFollowingSet).count)
@@ -1442,18 +1514,26 @@ final class FirestoreManager: ObservableObject {
                     + (sharedHelpfulTags * 0.3)
                     + (mutualConnectionsWeight * 0.2)
                     + (activityWeight * 0.1)
-                guard score > 0 else { continue }
                 candidates.append((appUser, score))
             }
-            return candidates
+
+            let final = candidates
                 .sorted { lhs, rhs in
                     if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
                     return lhs.0.name.localizedCaseInsensitiveCompare(rhs.0.name) == .orderedAscending
                 }
                 .prefix(20)
                 .map(\.0)
+
+            #if DEBUG
+            print("[FIND_FRIENDS] authUid=\(user.id) usersFetched=\(usersFetched) afterExcludingSelf=\(afterSelf) afterFollowingFilter=\(afterFollowing) afterBlockedFilter=\(afterBlocked) afterNamelessFilter=\(afterNameless) finalSuggestions=\(final.count)")
+            #endif
+            return final
         } catch {
             AppLogger.error("recommendUsers failed: \(error.localizedDescription)")
+            #if DEBUG
+            print("[FIND_FRIENDS] authUid=\(user.id) usersFetched=0 error=\(error.localizedDescription)")
+            #endif
             return []
         }
     }
@@ -1495,26 +1575,89 @@ final class FirestoreManager: ObservableObject {
     }
 
     private func appUserFromDocument(id: String, data: [String: Any]) -> AppUser? {
-        let name = (data["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if name.isEmpty { return nil }
-        let email = data["email"] as? String ?? ""
-        let createdAt = (data["createdAt"] as? Timestamp)?.dateValue() ?? Date()
-        let checkInStreak = FirestoreManager.intFromFirestore(data["checkInStreak"])
-        let lastCheckInDate = (data["lastCheckInDate"] as? Timestamp)?.dateValue()
-        let postCount = FirestoreManager.intFromFirestore(data["postCount"])
-        let followerCount = FirestoreManager.intFromFirestore(data["followerCount"])
-        let followingCount = FirestoreManager.intFromFirestore(data["followingCount"])
+        let canonical = Self.mergeCanonicalPublicFields(root: data, profileMain: [:])
+        return appUserFromCanonical(userId: id, root: data, canonical: canonical)
+    }
+
+    private struct CanonicalPublicProfile {
+        let displayName: String
+        let profileImageURL: String?
+        let zodiacSign: String?
+        let hasProfileImage: Bool
+        let sourcePath: String
+    }
+
+    private static func trimmedString(_ value: Any?) -> String {
+        (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private static func firstNonEmpty(_ values: String...) -> String? {
+        for value in values where !value.isEmpty { return value }
+        return nil
+    }
+
+    private static func mergeCanonicalPublicFields(root: [String: Any], profileMain: [String: Any]) -> CanonicalPublicProfile {
+        let profileName = trimmedString(profileMain["name"])
+        let rootName = trimmedString(root["name"])
+        let displayName = !profileName.isEmpty ? profileName : rootName
+
+        let profileImageURL = firstNonEmpty(
+            trimmedString(profileMain["profileImageURL"]),
+            trimmedString(root["profileImageURL"])
+        )
+        let zodiacSign = firstNonEmpty(
+            trimmedString(profileMain["zodiacSign"]),
+            trimmedString(root["zodiacSign"])
+        )
+        let hasProfileImage = (profileMain["hasProfileImage"] as? Bool)
+            ?? (root["hasProfileImage"] as? Bool)
+            ?? !(profileImageURL ?? "").isEmpty
+
+        let sourcePath: String
+        if !profileMain.isEmpty, !profileName.isEmpty || profileMain["profileImageURL"] != nil {
+            sourcePath = "users/{uid}+profile/main"
+        } else {
+            sourcePath = "users/{uid}"
+        }
+
+        return CanonicalPublicProfile(
+            displayName: displayName,
+            profileImageURL: profileImageURL,
+            zodiacSign: zodiacSign,
+            hasProfileImage: hasProfileImage,
+            sourcePath: sourcePath
+        )
+    }
+
+    private func appUserFromCanonical(userId: String, root: [String: Any], canonical: CanonicalPublicProfile) -> AppUser? {
+        let email = trimmedString(root["email"])
+        guard !canonical.displayName.isEmpty || !email.isEmpty else { return nil }
+
+        let createdAt = (root["createdAt"] as? Timestamp)?.dateValue() ?? Date()
+        let checkInStreak = FirestoreManager.intFromFirestore(root["checkInStreak"])
+        let lastCheckInDate = (root["lastCheckInDate"] as? Timestamp)?.dateValue()
+        let postCount = FirestoreManager.intFromFirestore(root["postCount"])
+        let followerCount = FirestoreManager.intFromFirestore(root["followerCount"])
+        let followingCount = FirestoreManager.intFromFirestore(root["followingCount"])
+
         return AppUser(
-            id: id,
-            name: name,
+            id: userId,
+            name: canonical.displayName.isEmpty ? "Friend" : canonical.displayName,
             email: email,
             createdAt: createdAt,
             postCount: postCount,
             followerCount: followerCount,
             followingCount: followingCount,
             checkInStreak: checkInStreak,
-            lastCheckInDate: lastCheckInDate
+            lastCheckInDate: lastCheckInDate,
+            zodiacSign: canonical.zodiacSign,
+            profileImageURL: canonical.profileImageURL,
+            hasProfileImage: canonical.hasProfileImage
         )
+    }
+
+    private func trimmedString(_ value: Any?) -> String {
+        Self.trimmedString(value)
     }
 
     func setFollowing(currentUserId: String, targetUserId: String, follow: Bool) async throws {
@@ -1784,13 +1927,38 @@ final class FirestoreManager: ObservableObject {
         let resolvedTitle = trimmedTitle.isEmpty ? "Daily reflection 🌿" : trimmedTitle
 
         var uploadedImageURL = ""
-        if let image = checkIn.checkInImage {
+        var mediaType = FeedPostMediaType.none
+        var uploadedVideoURL = ""
+        var uploadedVideoThumbnailURL = ""
+        var videoDuration: Double?
+        var videoWidth: Double?
+        var videoHeight: Double?
+
+        if let videoURL = checkIn.checkInVideoURL {
+            do {
+                let upload = try await uploadPostVideo(videoURL, userId: authorId)
+                uploadedVideoURL = upload.videoURL.absoluteString
+                uploadedVideoThumbnailURL = upload.thumbnailURL?.absoluteString ?? ""
+                videoDuration = upload.duration
+                videoWidth = upload.width
+                videoHeight = upload.height
+                mediaType = .video
+            } catch {
+                errorMessage = error.localizedDescription
+                AppLogger.error("Video upload failed: \(error.localizedDescription)")
+                return false
+            }
+        } else if let image = checkIn.checkInImage {
             do {
                 let url = try await uploadImage(image, userId: authorId)
                 uploadedImageURL = url.absoluteString
+                mediaType = .image
             } catch {
-                if (error as NSError).code == 501 {
+                let nsError = error as NSError
+                if nsError.code == 501 {
                     errorMessage = error.localizedDescription
+                } else if nsError.domain == "ImageUploadJPEG" || nsError.code == 400 {
+                    errorMessage = ImageUploadJPEG.prepareFailedMessage
                 } else {
                     errorMessage = "Couldn't upload image. Please try again."
                 }
@@ -1811,6 +1979,7 @@ final class FirestoreManager: ObservableObject {
             "lookForwardTo": goalLine,
             "title": resolvedTitle,
             "imageURL": uploadedImageURL,
+            "mediaType": mediaType.rawValue,
             "weekNumber": checkIn.weekNumber,
             "selectedEmotions": checkIn.selectedEmotionsOrdered.isEmpty
                 ? Array(checkIn.selectedEmotions).sorted()
@@ -1832,6 +2001,21 @@ final class FirestoreManager: ObservableObject {
         if !gratitude.isEmpty {
             data["gratitudeText"] = gratitude
         }
+        if !uploadedVideoURL.isEmpty {
+            data["videoURL"] = uploadedVideoURL
+        }
+        if !uploadedVideoThumbnailURL.isEmpty {
+            data["videoThumbnailURL"] = uploadedVideoThumbnailURL
+        }
+        if let videoDuration {
+            data["videoDuration"] = videoDuration
+        }
+        if let videoWidth {
+            data["videoWidth"] = videoWidth
+        }
+        if let videoHeight {
+            data["videoHeight"] = videoHeight
+        }
         if let intensity = checkIn.intensity {
             data["intensity"] = intensity
         }
@@ -1852,6 +2036,10 @@ final class FirestoreManager: ObservableObject {
 
         do {
             let ref = db.collection("posts").document()
+            let postId = ref.documentID
+            #if DEBUG
+            print("[POST_CREATE_DEBUG] authUid=\(user.uid) postId=\(postId) authorId=\(authorId) userId=\(data["userId"] ?? "nil") payloadKeys=\(Array(data.keys).sorted().joined(separator: ",")) mediaType=\(data["mediaType"] ?? "nil") hasImageURL=\(!((data["imageURL"] as? String ?? "").isEmpty)) hasVideoURL=\(data["videoURL"] != nil)")
+            #endif
             try await ref.setData(data, merge: true)
             print("[POST] Post created successfully")
             do {
@@ -2222,42 +2410,13 @@ final class FirestoreManager: ObservableObject {
 
     func uploadImage(_ image: UIImage, userId: String) async throws -> URL {
 #if canImport(FirebaseStorage)
-        print("📤 Uploading image for user: \(userId)")
-        guard let data = image.jpegData(compressionQuality: 0.84) else {
-            throw NSError(domain: "FirestoreManager", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid image data"])
-        }
+        let data = try ImageUploadJPEG.jpegDataForUpload(
+            from: image,
+            compressionQuality: 0.84,
+            maxPixelDimension: 2048
+        )
         let path = "post_images/\(userId)/\(UUID().uuidString).jpg"
-        print("📤 Upload path: \(path)")
-        let ref = Storage.storage().reference().child(path)
-        let metadata = StorageMetadata()
-        metadata.contentType = "image/jpeg"
-
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            ref.putData(data, metadata: metadata) { _, error in
-                if let error {
-                    print("❌ Firebase Storage upload error: \(error.localizedDescription)")
-                    continuation.resume(throwing: error)
-                } else {
-                    print("✅ Firebase Storage upload succeeded for path: \(path)")
-                    continuation.resume(returning: ())
-                }
-            }
-        }
-
-        let downloadURL = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
-            ref.downloadURL { url, error in
-                if let error {
-                    print("❌ Firebase Storage downloadURL error: \(error.localizedDescription)")
-                    continuation.resume(throwing: error)
-                } else if let url {
-                    print("✅ Firebase Storage URL: \(url.absoluteString)")
-                    continuation.resume(returning: url)
-                } else {
-                    continuation.resume(throwing: NSError(domain: "FirestoreManager", code: 500, userInfo: [NSLocalizedDescriptionKey: "Missing download URL"]))
-                }
-            }
-        }
-        return downloadURL
+        return try await uploadJPEGData(atStoragePath: path, data: data)
 #else
         let message = "FirebaseStorage SDK is not linked. Add FirebaseStorage to the app target to enable image uploads."
         AppLogger.error(message)
@@ -2267,6 +2426,173 @@ final class FirestoreManager: ObservableObject {
             userInfo: [NSLocalizedDescriptionKey: message]
         )
 #endif
+    }
+
+    func uploadProfileImage(_ image: UIImage, userId: String) async throws -> URL {
+#if canImport(FirebaseStorage)
+        let data = try ImageUploadJPEG.jpegDataForUpload(
+            from: image,
+            compressionQuality: 0.82,
+            maxPixelDimension: 1024
+        )
+        let path = "profile_images/\(userId)/profile.jpg"
+        return try await uploadJPEGData(atStoragePath: path, data: data)
+#else
+        let message = "FirebaseStorage SDK is not linked. Add FirebaseStorage to enable profile image uploads."
+        AppLogger.error(message)
+        throw NSError(domain: "FirestoreManager", code: 501, userInfo: [NSLocalizedDescriptionKey: message])
+#endif
+    }
+
+    private struct UploadedPostVideo {
+        let videoURL: URL
+        let thumbnailURL: URL?
+        let duration: Double
+        let width: Double?
+        let height: Double?
+    }
+
+    private static let betaMaxVideoDuration: Double = 12
+    private static let betaMaxVideoBytes: Int64 = 50 * 1024 * 1024
+
+    private func uploadPostVideo(_ localURL: URL, userId: String) async throws -> UploadedPostVideo {
+#if canImport(FirebaseStorage)
+        let fileSize = try localURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard Int64(fileSize) <= Self.betaMaxVideoBytes else {
+            throw NSError(
+                domain: "FirestoreManager",
+                code: 413,
+                userInfo: [NSLocalizedDescriptionKey: "Videos can be up to 50 MB for beta."]
+            )
+        }
+
+        let asset = AVURLAsset(url: localURL)
+        let duration = CMTimeGetSeconds(asset.duration)
+        guard duration.isFinite, duration > 0 else {
+            throw NSError(domain: "FirestoreManager", code: 400, userInfo: [NSLocalizedDescriptionKey: "We couldn't read this video. Try another file."])
+        }
+        guard duration <= Self.betaMaxVideoDuration else {
+            throw NSError(domain: "FirestoreManager", code: 413, userInfo: [NSLocalizedDescriptionKey: "For now, videos need to be 12 seconds or less."])
+        }
+
+        let videoId = UUID().uuidString
+        let videoPath = "post_videos/\(userId)/\(videoId).mp4"
+        let videoRef = Storage.storage().reference().child(videoPath)
+        let metadata = StorageMetadata()
+        metadata.contentType = "video/mp4"
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            videoRef.putFile(from: localURL, metadata: metadata) { _, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: ())
+                }
+            }
+        }
+
+        let downloadURL = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+            videoRef.downloadURL { url, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let url {
+                    continuation.resume(returning: url)
+                } else {
+                    continuation.resume(throwing: NSError(domain: "FirestoreManager", code: 500, userInfo: [NSLocalizedDescriptionKey: "Missing video download URL"]))
+                }
+            }
+        }
+
+        let thumbnail = try? makeVideoThumbnail(from: asset)
+        var thumbnailURL: URL?
+        if let thumbnail {
+            do {
+                let thumbData = try ImageUploadJPEG.jpegDataForUpload(
+                    from: thumbnail,
+                    compressionQuality: 0.82,
+                    maxPixelDimension: 900
+                )
+                let thumbPath = "post_video_thumbnails/\(userId)/\(videoId).jpg"
+                thumbnailURL = try await uploadJPEGData(atStoragePath: thumbPath, data: thumbData)
+            } catch {
+                #if DEBUG
+                print("[MEDIA_UPLOAD] thumbnail prepare failed: \(error.localizedDescription)")
+                #endif
+            }
+        }
+
+        let size = naturalVideoSize(from: asset)
+        return UploadedPostVideo(
+            videoURL: downloadURL,
+            thumbnailURL: thumbnailURL,
+            duration: duration,
+            width: size.map { Double($0.width) },
+            height: size.map { Double($0.height) }
+        )
+#else
+        let message = "FirebaseStorage SDK is not linked. Add FirebaseStorage to the app target to enable video uploads."
+        AppLogger.error(message)
+        throw NSError(
+            domain: "FirestoreManager",
+            code: 501,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
+#endif
+    }
+
+#if canImport(FirebaseStorage)
+    private func logMediaUpload(path: String, sizeBytes: Int) {
+        #if DEBUG
+        print("[MEDIA_UPLOAD] path=\(path) contentType=image/jpeg fileExtension=jpg sizeBytes=\(sizeBytes)")
+        #endif
+    }
+
+    /// Uploads JPEG bytes to Storage. Path must end in `.jpg`.
+    private func uploadJPEGData(atStoragePath path: String, data: Data) async throws -> URL {
+        guard path.lowercased().hasSuffix(".jpg") else {
+            throw NSError(domain: "FirestoreManager", code: 400, userInfo: [NSLocalizedDescriptionKey: "Image upload path must use .jpg"])
+        }
+        logMediaUpload(path: path, sizeBytes: data.count)
+        let ref = Storage.storage().reference().child(path)
+        let metadata = StorageMetadata()
+        metadata.contentType = "image/jpeg"
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            ref.putData(data, metadata: metadata) { _, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: ())
+                }
+            }
+        }
+
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+            ref.downloadURL { url, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let url {
+                    continuation.resume(returning: url)
+                } else {
+                    continuation.resume(throwing: NSError(domain: "FirestoreManager", code: 500, userInfo: [NSLocalizedDescriptionKey: "Missing download URL"]))
+                }
+            }
+        }
+    }
+#endif
+
+    private func makeVideoThumbnail(from asset: AVAsset) throws -> UIImage {
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 900, height: 900)
+        let cgImage = try generator.copyCGImage(at: CMTime(seconds: 0.1, preferredTimescale: 600), actualTime: nil)
+        return UIImage(cgImage: cgImage)
+    }
+
+    private func naturalVideoSize(from asset: AVAsset) -> CGSize? {
+        guard let track = asset.tracks(withMediaType: .video).first else { return nil }
+        let transformed = track.naturalSize.applying(track.preferredTransform)
+        return CGSize(width: abs(transformed.width), height: abs(transformed.height))
     }
 
     private func performApplyReaction(postId: String, userId: String, emoji: String) async throws {
@@ -2845,30 +3171,39 @@ final class FirestoreManager: ObservableObject {
 
     func fetchUserProfile(userId: String) async -> UserProfile? {
         if Self.isXcodePreview { return nil }
+        let rootSnap = try? await userRootRef(userId: userId).getDocument()
+        let profileSnap = try? await userPublicProfileRef(userId: userId).getDocument()
+        let root = rootSnap?.data() ?? [:]
+        let profile = profileSnap?.data() ?? [:]
+        guard !root.isEmpty || !profile.isEmpty else { return nil }
+
+        let canonical = Self.mergeCanonicalPublicFields(root: root, profileMain: profile)
+        var merged = profile
+        if !canonical.displayName.isEmpty { merged["name"] = canonical.displayName }
+        if let profileImageURL = canonical.profileImageURL { merged["profileImageURL"] = profileImageURL }
+        if let zodiacSign = canonical.zodiacSign { merged["zodiacSign"] = zodiacSign }
+        merged["hasProfileImage"] = canonical.hasProfileImage
+        if merged["bio"] == nil { merged["bio"] = root["bio"] }
+        if merged["interests"] == nil { merged["interests"] = root["interests"] }
+        if merged["joys"] == nil { merged["joys"] = root["joys"] }
+        if merged["favoriteSong"] == nil { merged["favoriteSong"] = root["favoriteSong"] }
+        if merged["favoriteArtist"] == nil { merged["favoriteArtist"] = root["favoriteArtist"] }
+        if merged["showFavoriteSong"] == nil { merged["showFavoriteSong"] = root["showFavoriteSong"] }
+        if merged["pronouns"] == nil { merged["pronouns"] = root["pronouns"] }
+        if merged["pets"] == nil { merged["pets"] = root["pets"] }
+        if merged["drinkingPreference"] == nil { merged["drinkingPreference"] = root["drinkingPreference"] }
+        if merged["relationshipStatus"] == nil { merged["relationshipStatus"] = root["relationshipStatus"] }
+
+        #if DEBUG
+        let song = trimmedString(merged["favoriteSong"])
+        let sourcePath = profile["favoriteSong"] != nil ? "users/{uid}/profile/main" : (root["favoriteSong"] != nil ? "users/{uid}" : "none")
+        print("[PROFILE_FAVORITE_SONG] uid=\(userId) sourcePath=\(sourcePath) favoriteSongFound=\(!song.isEmpty)")
+        #endif
+
         do {
-            let rootSnap = try await userRootRef(userId: userId).getDocument()
-            let profileSnap = try await userPublicProfileRef(userId: userId).getDocument()
-            let root = rootSnap.data() ?? [:]
-            let profile = profileSnap.data() ?? [:]
-
-            var merged = profile
-            if merged["name"] == nil {
-                merged["name"] = root["name"] as? String
-            }
-            if merged["profileImageURL"] == nil {
-                merged["profileImageURL"] = root["profileImageURL"] as? String
-            }
-            if merged["zodiacSign"] == nil {
-                merged["zodiacSign"] = root["zodiacSign"] as? String
-            }
-            if merged["hasProfileImage"] == nil {
-                merged["hasProfileImage"] = root["hasProfileImage"] as? Bool
-            }
-
-            guard !merged.isEmpty else { return nil }
             return try UserProfile.fromFirestoreDictionary(merged)
         } catch {
-            print("⚠️ fetchUserProfile: \(error.localizedDescription)")
+            print("⚠️ fetchUserProfile decode: \(error.localizedDescription)")
             return nil
         }
     }
@@ -2877,7 +3212,75 @@ final class FirestoreManager: ObservableObject {
         _ = try requireAuthUser(matchingExpectedUid: userId)
         try await runWrite(successLog: "User profile saved") {
             let payload = try profile.asFirestoreDictionary()
-            try await self.userRootRef(userId: userId).setData(payload, merge: true)
+            var rootPayload: [String: Any] = [:]
+            if let name = profile.name { rootPayload["name"] = name }
+            if let zodiacSign = profile.zodiacSign { rootPayload["zodiacSign"] = zodiacSign }
+            if let profileImageURL = profile.profileImageURL { rootPayload["profileImageURL"] = profileImageURL }
+            if let hasProfileImage = profile.hasProfileImage { rootPayload["hasProfileImage"] = hasProfileImage }
+            if !rootPayload.isEmpty {
+                try await self.userRootRef(userId: userId).setData(rootPayload, merge: true)
+            }
+            try await self.userPublicProfileRef(userId: userId).setData(payload, merge: true)
+        }
+    }
+
+    func savePublicPersonalizeProfileFields(
+        userId: String,
+        favoriteSong: String?,
+        favoriteArtist: String?,
+        pronouns: String?,
+        pets: String?,
+        drinkingPreference: String?,
+        relationshipStatus: String?
+    ) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: userId)
+
+        func trimmed(_ value: String?) -> String {
+            value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+
+        // These fields are shown on the user's public profile because they are entered in the Personalize/Profile section.
+        var payload: [String: Any] = [:]
+        let song = trimmed(favoriteSong)
+        let artist = trimmed(favoriteArtist)
+        let cleanPronouns = trimmed(pronouns)
+        let cleanPets = trimmed(pets)
+        let cleanDrinking = trimmed(drinkingPreference)
+        let cleanRelationship = trimmed(relationshipStatus)
+
+        if !song.isEmpty {
+            payload["favoriteSong"] = song
+            payload["showFavoriteSong"] = true
+        }
+        if !artist.isEmpty { payload["favoriteArtist"] = artist }
+        if !cleanPronouns.isEmpty { payload["pronouns"] = cleanPronouns }
+        if !cleanPets.isEmpty { payload["pets"] = cleanPets }
+        if !cleanDrinking.isEmpty { payload["drinkingPreference"] = cleanDrinking }
+        if !cleanRelationship.isEmpty { payload["relationshipStatus"] = cleanRelationship }
+
+        #if DEBUG
+        print("[GROW_PERSONALIZE_SAVE] uid=\(userId) favoriteSong=\(song) pronouns=\(cleanPronouns) pets=\(cleanPets) drinkingPreference=\(cleanDrinking) relationshipStatus=\(cleanRelationship) writePath=users/{uid}/profile/main saveSuccess=pending")
+        #endif
+
+        guard !payload.isEmpty else {
+            #if DEBUG
+            print("[GROW_PERSONALIZE_SAVE] uid=\(userId) favoriteSong= pronouns= pets= drinkingPreference= relationshipStatus= writePath=users/{uid}/profile/main saveSuccess=true")
+            #endif
+            return
+        }
+
+        do {
+            try await runWrite(successLog: "Public personalize profile fields saved") {
+                try await self.userPublicProfileRef(userId: userId).setData(payload, merge: true)
+            }
+            #if DEBUG
+            print("[GROW_PERSONALIZE_SAVE] uid=\(userId) favoriteSong=\(song) pronouns=\(cleanPronouns) pets=\(cleanPets) drinkingPreference=\(cleanDrinking) relationshipStatus=\(cleanRelationship) writePath=users/{uid}/profile/main saveSuccess=true")
+            #endif
+        } catch {
+            #if DEBUG
+            print("[GROW_PERSONALIZE_SAVE] uid=\(userId) favoriteSong=\(song) pronouns=\(cleanPronouns) pets=\(cleanPets) drinkingPreference=\(cleanDrinking) relationshipStatus=\(cleanRelationship) writePath=users/{uid}/profile/main saveSuccess=false")
+            #endif
+            throw error
         }
     }
 
@@ -3112,6 +3515,7 @@ final class FirestoreManager: ObservableObject {
         userId: String,
         displayName: String,
         zodiacSign: String,
+        profileImage: UIImage?,
         hasProfileImage: Bool
     ) async throws {
         _ = try requireAuthUser(matchingExpectedUid: userId)
@@ -3120,18 +3524,31 @@ final class FirestoreManager: ObservableObject {
         guard !cleanName.isEmpty, !cleanZodiac.isEmpty else {
             throw NSError(domain: "FirestoreManager", code: 400, userInfo: [NSLocalizedDescriptionKey: "Name and zodiac are required"])
         }
+        let uploadedProfileImageURL: String? = if let profileImage {
+            try await uploadProfileImage(profileImage, userId: userId).absoluteString
+        } else {
+            nil
+        }
+        let resolvedHasProfileImage = hasProfileImage || uploadedProfileImageURL != nil
         try await runWrite(successLog: "Onboarding profile saved") {
-            try await self.userRootRef(userId: userId).setData([
+            var rootPayload: [String: Any] = [
                 "name": cleanName,
                 "zodiacSign": cleanZodiac,
-                "hasProfileImage": hasProfileImage,
+                "hasProfileImage": resolvedHasProfileImage,
                 "updatedAt": FieldValue.serverTimestamp()
-            ], merge: true)
-            let payload: [String: Any] = [
+            ]
+            if let uploadedProfileImageURL {
+                rootPayload["profileImageURL"] = uploadedProfileImageURL
+            }
+            try await self.userRootRef(userId: userId).setData(rootPayload, merge: true)
+            var payload: [String: Any] = [
                 "name": cleanName,
                 "zodiacSign": cleanZodiac,
-                "hasProfileImage": hasProfileImage
+                "hasProfileImage": resolvedHasProfileImage
             ]
+            if let uploadedProfileImageURL {
+                payload["profileImageURL"] = uploadedProfileImageURL
+            }
             try await self.userPublicProfileRef(userId: userId).setData(payload, merge: true)
         }
     }
@@ -3255,25 +3672,105 @@ final class FirestoreManager: ObservableObject {
 
     // MARK: - Thinking of You
 
-    /// Sends a lightweight "thinking of you" poke. Enforces a 12-hour per-pair cooldown via UserDefaults.
+    /// Sends a lightweight support note into the existing DM flow.
+    /// Enforces a 24-hour per-pair cooldown using recent conversation messages plus a local fallback.
     func sendThinkingOfYou(from fromId: String, to toId: String) async throws {
+        _ = try requireAuthUser(matchingExpectedUid: fromId)
+        guard fromId != toId else {
+            throw NSError(domain: "ThinkingOfYou", code: 400, userInfo: [NSLocalizedDescriptionKey: "Choose another person to encourage."])
+        }
+
+        let blocked = try await interactionBlockedBetween(actorId: fromId, otherUserId: toId)
+        guard !blocked else {
+            #if DEBUG
+            print("[THINKING_OF_YOU] fromUserId=\(fromId) toUserId=\(toId) blocked=true conversationId=none messageId=none cooldownAllowed=false conversationWriteSuccess=false eventLogWriteSuccess=false")
+            #endif
+            throw NSError(domain: "ThinkingOfYou", code: 403, userInfo: [NSLocalizedDescriptionKey: "You can’t send support to this person right now."])
+        }
+
         let cooldownKey = "thinkingOfYou_\(fromId)_\(toId)"
         if let last = UserDefaults.standard.object(forKey: cooldownKey) as? Date,
-           Date().timeIntervalSince(last) < 12 * 3600 {
+           Date().timeIntervalSince(last) < 24 * 3600 {
             throw NSError(
                 domain: "ThinkingOfYou",
                 code: 429,
                 userInfo: [NSLocalizedDescriptionKey: "You already reached out recently. Give them a little space. 🤍"]
             )
         }
-        _ = try requireAuthUser(matchingExpectedUid: fromId)
-        let ref = db.collection("thinking_of_you").document()
-        try await ref.setData([
-            "fromUserId": fromId,
-            "toUserId": toId,
-            "createdAt": FieldValue.serverTimestamp()
-        ])
+
+        let conversation = try await fetchOrCreateConversation(between: fromId, and: toId)
+        let cooldownAllowed = !(await hasRecentThinkingOfYouMessage(
+            conversationId: conversation.id,
+            fromUserId: fromId,
+            toUserId: toId,
+            within: 24 * 3600
+        ))
+
+        guard cooldownAllowed else {
+            #if DEBUG
+            print("[THINKING_OF_YOU] fromUserId=\(fromId) toUserId=\(toId) blocked=false conversationId=\(conversation.id) messageId=none cooldownAllowed=false conversationWriteSuccess=false eventLogWriteSuccess=false")
+            #endif
+            throw NSError(
+                domain: "ThinkingOfYou",
+                code: 429,
+                userInfo: [NSLocalizedDescriptionKey: "You already reached out recently. Give them a little space. 🤍"]
+            )
+        }
+
+        let senderName = (await fetchAppUserProfile(userId: fromId))?.name
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let messageText = senderName.isEmpty
+            ? "Someone is thinking of you 💛"
+            : "\(senderName) is thinking of you 💛"
+
+        let msgRef = db.collection("conversations")
+            .document(conversation.id)
+            .collection("messages")
+            .document()
+
+        var conversationWriteSuccess = false
+        var eventLogWriteSuccess = false
+        do {
+            try await msgRef.setData([
+                "type": "thinkingOfYou",
+                "senderId": fromId,
+                "recipientId": toId,
+                "text": messageText,
+                "systemTone": "gentle_support",
+                "read": false,
+                "createdAt": FieldValue.serverTimestamp()
+            ])
+            try await db.collection("conversations").document(conversation.id).setData([
+                "lastMessage": messageText,
+                "lastSenderId": fromId,
+                "updatedAt": FieldValue.serverTimestamp()
+            ], merge: true)
+            conversationWriteSuccess = true
+        } catch {
+            #if DEBUG
+            print("[THINKING_OF_YOU] fromUserId=\(fromId) toUserId=\(toId) blocked=false conversationId=\(conversation.id) messageId=\(msgRef.documentID) cooldownAllowed=true conversationWriteSuccess=false eventLogWriteSuccess=false")
+            #endif
+            throw error
+        }
+
+        do {
+            let ref = db.collection("thinking_of_you").document()
+            try await ref.setData([
+                "fromUserId": fromId,
+                "toUserId": toId,
+                "conversationId": conversation.id,
+                "messageId": msgRef.documentID,
+                "createdAt": FieldValue.serverTimestamp()
+            ])
+            eventLogWriteSuccess = true
+        } catch {
+            AppLogger.error("thinking_of_you event log failed: \(error.localizedDescription)")
+        }
+
         UserDefaults.standard.set(Date(), forKey: cooldownKey)
+        #if DEBUG
+        print("[THINKING_OF_YOU] fromUserId=\(fromId) toUserId=\(toId) blocked=false conversationId=\(conversation.id) messageId=\(msgRef.documentID) cooldownAllowed=true conversationWriteSuccess=\(conversationWriteSuccess) eventLogWriteSuccess=\(eventLogWriteSuccess)")
+        #endif
         AppLogger.log("[THINKING_OF_YOU] Sent from \(fromId) to \(toId)")
     }
 
@@ -3281,8 +3778,37 @@ final class FirestoreManager: ObservableObject {
         let key = "thinkingOfYou_\(fromId)_\(toId)"
         guard let last = UserDefaults.standard.object(forKey: key) as? Date else { return nil }
         let elapsed = Date().timeIntervalSince(last)
-        let remaining = 12 * 3600 - elapsed
+        let remaining = 24 * 3600 - elapsed
         return remaining > 0 ? remaining : nil
+    }
+
+    private func hasRecentThinkingOfYouMessage(
+        conversationId: String,
+        fromUserId: String,
+        toUserId: String,
+        within interval: TimeInterval
+    ) async -> Bool {
+        do {
+            let snap = try await db.collection("conversations")
+                .document(conversationId)
+                .collection("messages")
+                .order(by: "createdAt", descending: true)
+                .limit(to: 50)
+                .getDocuments()
+            let cutoff = Date().addingTimeInterval(-interval)
+            return snap.documents.contains { doc in
+                let data = doc.data()
+                guard data["type"] as? String == "thinkingOfYou",
+                      data["senderId"] as? String == fromUserId,
+                      data["recipientId"] as? String == toUserId,
+                      let createdAt = (data["createdAt"] as? Timestamp)?.dateValue()
+                else { return false }
+                return createdAt >= cutoff
+            }
+        } catch {
+            AppLogger.error("hasRecentThinkingOfYouMessage failed: \(error.localizedDescription)")
+            return false
+        }
     }
 
     // MARK: - Direct Messaging
@@ -3366,7 +3892,9 @@ final class FirestoreManager: ObservableObject {
             .collection("messages")
             .document()
         try await msgRef.setData([
+            "type": "text",
             "senderId": senderId,
+            "recipientId": participantIds.first(where: { $0 != senderId }) ?? "",
             "text": trimmed,
             "createdAt": FieldValue.serverTimestamp()
         ])
@@ -3418,6 +3946,26 @@ final class FirestoreManager: ObservableObject {
             AppLogger.error("fetchGroupAdminVotes failed: \(error.localizedDescription)")
             return [:]
         }
+    }
+
+    static func logFirebaseProjectAndRulesAudit() {
+        #if DEBUG
+        if let path = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
+           let plist = NSDictionary(contentsOfFile: path),
+           let projectId = plist["PROJECT_ID"] as? String {
+            print("[FIREBASE_PROJECT] projectId=\(projectId)")
+        } else {
+            print("[FIREBASE_PROJECT] projectId=unknown (GoogleService-Info.plist missing PROJECT_ID)")
+        }
+        let covered = [
+            "posts", "posts/comments", "posts/reactions", "users", "users/profile",
+            "users/blockedUsers", "users/insights", "users/nudges", "users/eventStream",
+            "following/{uid}/userFollowing", "followers/{uid}/userFollowers", "follows",
+            "groups", "default_groups", "group_admin_votes", "dopamineMenus",
+            "conversations", "thinking_of_you", "reports"
+        ]
+        print("[RULES_AUDIT] localRulesFile=firebase/firestore.rules publishRequired=true pathsCovered=\(covered.joined(separator: ","))")
+        #endif
     }
 
     private func socialGroup(from doc: DocumentSnapshot) -> SocialGroup? {

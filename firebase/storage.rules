@@ -1,0 +1,55 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function isJpeg() {
+      return request.resource.contentType == 'image/jpeg';
+    }
+
+    function isVideo() {
+      return request.resource.contentType.matches('video/.*');
+    }
+
+    match /post_images/{userId}/{fileName} {
+      allow read: if signedIn();
+      allow write: if isOwner(userId)
+        && isJpeg()
+        && request.resource.size < 10 * 1024 * 1024;
+    }
+
+    match /post_videos/{userId}/{fileName} {
+      allow read: if signedIn();
+      allow write: if isOwner(userId)
+        && isVideo()
+        && request.resource.size < 50 * 1024 * 1024;
+    }
+
+    match /post_video_thumbnails/{userId}/{fileName} {
+      allow read: if signedIn();
+      allow write: if isOwner(userId)
+        && isJpeg()
+        && request.resource.size < 2 * 1024 * 1024;
+    }
+
+    match /profile_images/{userId}/{fileName} {
+      allow read: if signedIn();
+      allow write: if isOwner(userId)
+        && isJpeg()
+        && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    match /group_images/{groupId}/{fileName} {
+      allow read: if signedIn();
+      // Disabled for TestFlight until owner/admin checks are wired to Storage rules safely.
+      allow write: if false;
+    }
+  }
+}

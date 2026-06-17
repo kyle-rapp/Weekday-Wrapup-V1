@@ -463,6 +463,7 @@
 		99D876A92D0E80D6001224DD /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Weekday Wrapup V1/Weekday Wrapup V1.entitlements";
 				CODE_SIGN_STYLE = Automatic;
@@ -471,9 +472,10 @@
 				DEVELOPMENT_TEAM = 275B2S664Q;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Weekly Wrapup";
+				INFOPLIST_KEY_CFBundleDisplayName = SO;
+				INFOPLIST_KEY_CFBundleName = "SO: Share Openly";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Weekday Wrapup uses your location for nearby park suggestions and local weather tips.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "SO: Share Openly uses your location for nearby park suggestions and local weather tips.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -485,7 +487,7 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "rapp-stuff.Weekday-Wrapup-V1";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "SO: Share Openly";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -495,6 +497,7 @@
 		99D876AA2D0E80D6001224DD /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Weekday Wrapup V1/Weekday Wrapup V1.entitlements";
 				CODE_SIGN_STYLE = Automatic;
@@ -503,9 +506,10 @@
 				DEVELOPMENT_TEAM = 275B2S664Q;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Weekly Wrapup";
+				INFOPLIST_KEY_CFBundleDisplayName = SO;
+				INFOPLIST_KEY_CFBundleName = "SO: Share Openly";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Weekday Wrapup uses your location for nearby park suggestions and local weather tips.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "SO: Share Openly uses your location for nearby park suggestions and local weather tips.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -517,7 +521,7 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "rapp-stuff.Weekday-Wrapup-V1";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "SO: Share Openly";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -539,7 +543,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Weekday Wrapup V1.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Weekday Wrapup V1";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SO: Share Openly.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SO: Share Openly";
 			};
 			name = Debug;
 		};
@@ -558,7 +562,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Weekday Wrapup V1.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Weekday Wrapup V1";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SO: Share Openly.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SO: Share Openly";
 			};
 			name = Release;
 		};

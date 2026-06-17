@@ -1,4 +1,5 @@
 import SwiftUI
+import AVKit
 
 /// FILE: Views/FeedView.swift
 /// Real-time feed UI + navigation to `PostDetailView`.
@@ -321,6 +322,8 @@ struct FeedPostCard: View {
     @State private var showBlockConfirm = false
     @State private var showDeleteConfirm = false
     @State private var actionMessage: String?
+    @State private var resolvedAuthorName: String?
+    @State private var resolvedAuthorImageURL: String?
 
     private var uid: String? { auth.currentUser?.id }
     private var livePost: FeedPost {
@@ -332,6 +335,17 @@ struct FeedPostCard: View {
     private var isFollowingAuthor: Bool {
         firestore.isFollowing(livePost.authorId)
     }
+    private var isOwnPost: Bool {
+        uid == livePost.authorId
+    }
+    private var showFollowButton: Bool {
+        guard uid != nil, !isOwnPost else { return false }
+        return !isFollowingAuthor
+    }
+    private var authorDisplayName: String {
+        let resolved = resolvedAuthorName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return resolved.isEmpty ? livePost.user.name : resolved
+    }
 
     var body: some View {
         cardBody
@@ -340,6 +354,15 @@ struct FeedPostCard: View {
                 guard uid != nil else { return }
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 expandedReactionPostId = post.id
+            }
+            .task(id: livePost.authorId) {
+                await resolveAuthorProfile()
+            }
+            .onAppear {
+                logFeedFollowUI()
+            }
+            .onChange(of: isFollowingAuthor) { _, _ in
+                logFeedFollowUI()
             }
             .accessibilityIdentifier("feed_post_\(post.id)")
     }
@@ -352,10 +375,7 @@ struct FeedPostCard: View {
                         .environmentObject(firestore)
                         .environmentObject(auth)
                 } label: {
-                    Image(systemName: "person.circle.fill")
-                        .resizable()
-                        .frame(width: 48, height: 48)
-                        .foregroundStyle(.orange.opacity(0.85))
+                    authorAvatar
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("feed_author_avatar_\(livePost.authorId)")
@@ -367,29 +387,32 @@ struct FeedPostCard: View {
                                 .environmentObject(firestore)
                                 .environmentObject(auth)
                         } label: {
-                            Text(livePost.user.name)
+                            Text(authorDisplayName)
                                 .font(.headline)
                                 .foregroundStyle(.primary)
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("feed_author_name_\(livePost.authorId)")
                         Spacer(minLength: 8)
-                        if let uid, uid != livePost.authorId {
-                            Button {
-                                Task {
-                                    await feedViewModel.toggleFollow(authorId: livePost.authorId, currentUserId: uid)
+                        if let uid, !isOwnPost {
+                            if showFollowButton {
+                                Button {
+                                    Task {
+                                        await feedViewModel.toggleFollow(authorId: livePost.authorId, currentUserId: uid)
+                                    }
+                                } label: {
+                                    Text("Follow")
+                                        .font(.caption.weight(.semibold))
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 7)
+                                        .background(Color.blue.opacity(0.12))
+                                        .foregroundStyle(.blue)
+                                        .clipShape(Capsule())
                                 }
-                            } label: {
-                                Text(isFollowingAuthor ? "Following" : "Follow")
-                                    .font(.caption.weight(.semibold))
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 7)
-                                    .background(isFollowingAuthor ? Color.green.opacity(0.16) : Color.blue.opacity(0.12))
-                                    .foregroundStyle(isFollowingAuthor ? .green : .blue)
-                                    .clipShape(Capsule())
+                                .buttonStyle(.borderless)
+                                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                                .animation(.easeInOut(duration: 0.2), value: showFollowButton)
                             }
-                            .buttonStyle(.borderless)
-                            .animation(.easeInOut(duration: 0.2), value: isFollowingAuthor)
 
                             Button {
                                 showInviteSheet = true
@@ -433,35 +456,7 @@ struct FeedPostCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if let urlString = livePost.imageURL?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !urlString.isEmpty,
-               let url = URL(string: urlString) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .empty:
-                        ProgressView()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    case .failure:
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color.gray.opacity(0.12))
-                            .overlay(
-                                Image(systemName: "photo")
-                                    .foregroundStyle(.secondary)
-                            )
-                    @unknown default:
-                        ProgressView()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                }
-                .frame(height: 220)
-                .frame(maxWidth: .infinity)
-                .clipped()
-                .cornerRadius(12)
-            }
+            PostMediaAttachmentView(post: livePost, height: 220)
 
             HStack(spacing: 10) {
                 Text(livePost.emoji)
@@ -624,6 +619,46 @@ struct FeedPostCard: View {
         }
     }
 
+    @ViewBuilder
+    private var authorAvatar: some View {
+        let raw = resolvedAuthorImageURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if let url = URL(string: raw), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFill()
+                case .empty:
+                    ProgressView()
+                default:
+                    Image(systemName: "person.circle.fill")
+                        .resizable()
+                        .foregroundStyle(.orange.opacity(0.85))
+                }
+            }
+            .frame(width: 48, height: 48)
+            .clipShape(Circle())
+        } else {
+            Image(systemName: "person.circle.fill")
+                .resizable()
+                .frame(width: 48, height: 48)
+                .foregroundStyle(.orange.opacity(0.85))
+        }
+    }
+
+    private func resolveAuthorProfile() async {
+        guard let profile = await firestore.fetchAppUserProfile(userId: livePost.authorId) else { return }
+        await MainActor.run {
+            resolvedAuthorName = profile.name
+            resolvedAuthorImageURL = profile.profileImageURL
+        }
+    }
+
+    private func logFeedFollowUI() {
+        #if DEBUG
+        print("[FEED_FOLLOW_UI] postAuthorId=\(livePost.authorId) currentUserId=\(uid ?? "nil") isOwnPost=\(isOwnPost) isFollowing=\(isFollowingAuthor) showFollowButton=\(showFollowButton)")
+        #endif
+    }
+
     private var postMenu: some View {
         Menu {
             if uid == livePost.authorId {
@@ -670,6 +705,106 @@ struct FeedPostCard: View {
         } catch {
             actionMessage = "We couldn't delete this post right now."
         }
+    }
+}
+
+struct PostMediaAttachmentView: View {
+    let post: FeedPost
+    var height: CGFloat = 220
+
+    @State private var showVideoPlayer = false
+
+    private var thumbnailURL: URL? {
+        let raw = (post.videoThumbnailURL ?? post.imageURL ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return URL(string: raw)
+    }
+
+    private var imageURL: URL? {
+        let raw = (post.imageURL ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return URL(string: raw)
+    }
+
+    private var videoURL: URL? {
+        let raw = (post.videoURL ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return URL(string: raw)
+    }
+
+    private var hasRenderableMedia: Bool {
+        if post.mediaType == .video { return videoURL != nil }
+        return imageURL != nil
+    }
+
+    var body: some View {
+        if hasRenderableMedia {
+            Group {
+            if post.mediaType == .video, videoURL != nil {
+                Button {
+                    showVideoPlayer = true
+                } label: {
+                    mediaImage(url: thumbnailURL)
+                        .overlay {
+                            Image(systemName: "play.circle.fill")
+                                .font(.system(size: 56))
+                                .foregroundStyle(.white)
+                                .shadow(radius: 4)
+                        }
+                        .overlay(alignment: .bottomTrailing) {
+                            if let duration = post.videoDuration {
+                                Text(formatDuration(duration))
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(Capsule().fill(Color.black.opacity(0.58)))
+                                    .padding(10)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+                .sheet(isPresented: $showVideoPlayer) {
+                    if let videoURL {
+                        VideoPlayer(player: AVPlayer(url: videoURL))
+                            .ignoresSafeArea()
+                    }
+                }
+            } else if let imageURL {
+                mediaImage(url: imageURL)
+            }
+            }
+            .frame(height: height)
+            .frame(maxWidth: .infinity)
+            .clipped()
+            .cornerRadius(12)
+        }
+    }
+
+    private func mediaImage(url: URL?) -> some View {
+        AsyncImage(url: url) { phase in
+            switch phase {
+            case .empty:
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .success(let image):
+                image
+                    .resizable()
+                    .scaledToFill()
+            case .failure:
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.gray.opacity(0.12))
+                    .overlay(
+                        Image(systemName: post.mediaType == .video ? "video" : "photo")
+                            .foregroundStyle(.secondary)
+                    )
+            @unknown default:
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
+    private func formatDuration(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        return "\(total / 60):\(String(format: "%02d", total % 60))"
     }
 }
 

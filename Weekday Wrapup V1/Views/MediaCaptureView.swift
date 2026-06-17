@@ -1,11 +1,16 @@
 import SwiftUI
 import AVFoundation
+import PhotosUI
+import UniformTypeIdentifiers
 
 struct MediaCaptureView: View {
     @Binding var capturedImage: UIImage?
+    @Binding var capturedVideoURL: URL?
+    @Binding var mediaError: String?
     @State private var showCamera = false
-    @State private var showMediaPicker = false
-    @State private var isRecordingVideo = false
+    @State private var selectedImageItem: PhotosPickerItem?
+    @State private var selectedVideoItem: PhotosPickerItem?
+    @State private var videoThumbnail: UIImage?
     
     var body: some View {
         VStack {
@@ -16,7 +21,7 @@ struct MediaCaptureView: View {
                     .frame(maxWidth: .infinity)
                     .clipped()
                     .overlay(alignment: .topTrailing) {
-                        Button(action: { capturedImage = nil }) {
+                        Button(action: clearMedia) {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.title)
                                 .foregroundColor(.white)
@@ -24,6 +29,32 @@ struct MediaCaptureView: View {
                         }
                         .padding(8)
                     }
+            } else if capturedVideoURL != nil {
+                ZStack {
+                    if let videoThumbnail {
+                        Image(uiImage: videoThumbnail)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Rectangle()
+                            .fill(Color.black.opacity(0.82))
+                    }
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 54))
+                        .foregroundStyle(.white)
+                        .shadow(radius: 3)
+                }
+                .frame(maxWidth: .infinity)
+                .clipped()
+                .overlay(alignment: .topTrailing) {
+                    Button(action: clearMedia) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title)
+                            .foregroundColor(.white)
+                            .shadow(radius: 2)
+                    }
+                    .padding(8)
+                }
             } else {
                 ZStack {
                     RoundedRectangle(cornerRadius: 12)
@@ -34,27 +65,25 @@ struct MediaCaptureView: View {
                             .font(.system(size: 40))
                             .foregroundColor(.blue)
                         
-                        Text("Take a photo or record a video")
+                        Text("Add a photo or upload a video")
                             .font(.headline)
                             .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
                         
-                        HStack(spacing: 20) {
+                        HStack(spacing: 10) {
                             Button(action: { showCamera = true }) {
-                                Label("Camera", systemImage: "camera")
-                                    .padding()
-                                    .background(Color.blue)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(8)
+                                mediaButtonLabel("Camera", systemImage: "camera")
                             }
                             
-                            Button(action: { showMediaPicker = true }) {
-                                Label("Gallery", systemImage: "photo.on.rectangle")
-                                    .padding()
-                                    .background(Color.blue)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(8)
+                            PhotosPicker(selection: $selectedImageItem, matching: .images) {
+                                mediaButtonLabel("Photo", systemImage: "photo")
+                            }
+
+                            PhotosPicker(selection: $selectedVideoItem, matching: .videos) {
+                                mediaButtonLabel("Video", systemImage: "video")
                             }
                         }
+                        .padding(.horizontal, 12)
                     }
                 }
             }
@@ -62,8 +91,115 @@ struct MediaCaptureView: View {
         .fullScreenCover(isPresented: $showCamera) {
             CameraView(image: $capturedImage)
         }
-        .sheet(isPresented: $showMediaPicker) {
-            ImagePicker(image: $capturedImage)
+        .onChange(of: capturedImage) { _, image in
+            if image != nil {
+                capturedVideoURL = nil
+                videoThumbnail = nil
+            }
+        }
+        .onChange(of: selectedImageItem) { _, item in
+            guard let item else { return }
+            Task { await loadImage(from: item) }
+        }
+        .onChange(of: selectedVideoItem) { _, item in
+            guard let item else { return }
+            Task { await loadVideo(from: item) }
+        }
+    }
+
+    private func mediaButtonLabel(_ title: String, systemImage: String) -> some View {
+        VStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .font(.headline.weight(.semibold))
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(minWidth: 74)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .background(Color.blue)
+        .foregroundColor(.white)
+        .cornerRadius(10)
+    }
+
+    private func clearMedia() {
+        capturedImage = nil
+        capturedVideoURL = nil
+        videoThumbnail = nil
+        mediaError = nil
+        selectedImageItem = nil
+        selectedVideoItem = nil
+    }
+
+    @MainActor
+    private func loadImage(from item: PhotosPickerItem) async {
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self),
+                  let image = UIImage(data: data) else {
+                mediaError = "We couldn't read that photo. Try another one."
+                return
+            }
+            capturedImage = image
+            capturedVideoURL = nil
+            videoThumbnail = nil
+            mediaError = nil
+        } catch {
+            mediaError = "We couldn't load that photo. Try another one."
+        }
+    }
+
+    @MainActor
+    private func loadVideo(from item: PhotosPickerItem) async {
+        do {
+            let video = try await item.loadTransferable(type: PickedVideo.self)
+            guard let url = video?.url else {
+                mediaError = "We couldn't read that video. Try another one."
+                return
+            }
+            let asset = AVURLAsset(url: url)
+            let duration = CMTimeGetSeconds(asset.duration)
+            guard duration.isFinite, duration <= 12 else {
+                capturedVideoURL = nil
+                videoThumbnail = nil
+                mediaError = "For now, videos need to be 12 seconds or less."
+                return
+            }
+            capturedImage = nil
+            capturedVideoURL = url
+            videoThumbnail = try? Self.thumbnail(for: url)
+            mediaError = nil
+        } catch {
+            mediaError = "We couldn't load that video. Try another one."
+        }
+    }
+
+    private static func thumbnail(for url: URL) throws -> UIImage {
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 900, height: 900)
+        let cgImage = try generator.copyCGImage(at: CMTime(seconds: 0.1, preferredTimescale: 600), actualTime: nil)
+        return UIImage(cgImage: cgImage)
+    }
+}
+
+private struct PickedVideo: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .movie) { video in
+            SentTransferredFile(video.url)
+        } importing: { received in
+            let ext = received.file.pathExtension.isEmpty ? "mov" : received.file.pathExtension
+            let copy = FileManager.default.temporaryDirectory
+                .appendingPathComponent("weekday-video-\(UUID().uuidString).\(ext)")
+            if FileManager.default.fileExists(atPath: copy.path) {
+                try FileManager.default.removeItem(at: copy)
+            }
+            try FileManager.default.copyItem(at: received.file, to: copy)
+            return PickedVideo(url: copy)
         }
     }
 }

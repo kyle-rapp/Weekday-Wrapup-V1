@@ -14,7 +14,7 @@ struct AuthView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
-                    Text("Weekday Wrapup")
+                    Text("SO: Share Openly")
                         .font(.largeTitle.bold())
                         .multilineTextAlignment(.center)
                         .padding(.top, 32)
